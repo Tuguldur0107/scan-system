@@ -1,0 +1,169 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared/shared.dart';
+import 'package:uuid/uuid.dart';
+
+import '../data/api/scans_api.dart';
+import '../data/local/local_scan.dart';
+
+const _uuid = Uuid();
+
+class ScanNotifier extends StateNotifier<List<LocalScan>> {
+  ScanNotifier() : super([]);
+
+  final _api = ScansApi();
+
+  String? _lastValue;
+  DateTime? _lastAt;
+
+  /// Fetch synced scans from server (used by web to see mobile scans)
+  Future<void> fetchFromServer({String? tenantId, String? projectId}) async {
+    try {
+      final response = await _api.list(
+        tenantId: tenantId,
+        projectId: projectId,
+        perPage: 200,
+      );
+      final items = (response['data'] as List?) ?? [];
+      final serverScans = items.map<LocalScan>((item) {
+        final m = item as Map<String, dynamic>;
+        final metadata = m['metadata'] as Map<String, dynamic>? ?? const {};
+        return LocalScan(
+          id: m['id']?.toString() ?? '',
+          projectId: m['project_id']?.toString() ?? '',
+          barcodeValue: m['barcode_value']?.toString() ?? '',
+          barcodeFormat: m['barcode_format']?.toString(),
+          scannedAt: DateTime.tryParse(m['scanned_at']?.toString() ?? '') ??
+              DateTime.now(),
+          notes: m['notes']?.toString() ?? m['project_name']?.toString(),
+          username: m['username']?.toString(),
+          synced: true,
+          sendId: metadata['send_id']?.toString(),
+        );
+      }).toList();
+
+      if (tenantId != null) {
+        state = serverScans;
+      } else {
+        // Merge: keep local pending scans + replace synced with server data
+        final pending = state.where((s) => !s.synced).toList();
+        state = [...pending, ...serverScans];
+      }
+    } catch (_) {
+      // Server unavailable — keep local state
+    }
+  }
+
+  bool shouldAccept(String value) {
+    final now = DateTime.now();
+    if (_lastValue == value && _lastAt != null) {
+      final diff = now.difference(_lastAt!).inMilliseconds;
+      if (diff < AppConstants.duplicateCooldownMs) return false;
+    }
+    _lastValue = value;
+    _lastAt = now;
+    return true;
+  }
+
+  void addScan({
+    required String taskId,
+    required String taskName,
+    required String barcodeValue,
+    String? barcodeFormat,
+    String? username,
+  }) {
+    final scan = LocalScan(
+      id: _uuid.v4(),
+      projectId: taskId,
+      barcodeValue: barcodeValue,
+      barcodeFormat: barcodeFormat,
+      scannedAt: DateTime.now(),
+      notes: taskName,
+      username: username,
+    );
+    state = [scan, ...state];
+  }
+
+  void updateBarcode(String id, String newValue) {
+    state = [
+      for (final s in state)
+        if (s.id == id) s.copyWith(barcodeValue: newValue) else s,
+    ];
+  }
+
+  void removeScan(String id) {
+    state = state.where((s) => s.id != id).toList();
+  }
+
+  List<LocalScan> get pending => state.where((s) => !s.synced).toList();
+  List<LocalScan> get synced => state.where((s) => s.synced).toList();
+
+  List<LocalScan> scansForTask(String taskId) =>
+      state.where((s) => s.projectId == taskId).toList();
+
+  Future<({int sent, int failed})> syncPending() async {
+    final toSync = pending;
+    if (toSync.isEmpty) return (sent: 0, failed: 0);
+    final sendId = _createSendId();
+    final toSyncWithId = [
+      for (final scan in toSync)
+        scan.copyWith(sendId: sendId, clearError: true),
+    ];
+
+    state = [
+      for (final scan in state)
+        if (toSync.any((pendingScan) => pendingScan.id == scan.id))
+          toSyncWithId.firstWhere((updated) => updated.id == scan.id)
+        else
+          scan,
+    ];
+
+    try {
+      final response =
+          await _api.batchSync(toSyncWithId.map((s) => s.toApiJson()).toList());
+      final syncedCount = response['count'] as int? ?? 0;
+      if (syncedCount != toSyncWithId.length) {
+        throw Exception(
+            'Batch sync incomplete: expected ${toSyncWithId.length}, got $syncedCount');
+      }
+    } catch (e) {
+      final message = 'Sync failed: $e';
+      state = [
+        for (final s in state)
+          if (toSyncWithId.any((p) => p.id == s.id))
+            s.copyWith(synced: false, error: message)
+          else
+            s,
+      ];
+      return (sent: 0, failed: toSyncWithId.length);
+    }
+
+    state = [
+      for (final s in state)
+        if (toSyncWithId.any((p) => p.id == s.id))
+          s.copyWith(synced: true, clearError: true)
+        else
+          s,
+    ];
+
+    return (sent: toSyncWithId.length, failed: 0);
+  }
+
+  void clearSynced() {
+    state = state.where((s) => !s.synced).toList();
+  }
+
+  String _createSendId() {
+    final now = DateTime.now();
+    final stamp =
+        '${now.year}${_two(now.month)}${_two(now.day)}-${_two(now.hour)}${_two(now.minute)}${_two(now.second)}';
+    final suffix = _uuid.v4().split('-').first.toUpperCase();
+    return 'SEND-$stamp-$suffix';
+  }
+
+  String _two(int value) => value.toString().padLeft(2, '0');
+}
+
+final scanProvider =
+    StateNotifierProvider<ScanNotifier, List<LocalScan>>((ref) {
+  return ScanNotifier();
+});

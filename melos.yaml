@@ -1,0 +1,15 @@
+name: scan_system
+packages:
+  - packages/**
+  - server
+  - app
+
+scripts:
+  analyze:
+    run: dart analyze .
+    exec:
+      concurrency: 3
+  format:
+    run: dart format .
+    exec:
+      concurrency: 3
