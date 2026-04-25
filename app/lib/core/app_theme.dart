@@ -46,52 +46,60 @@ class AppTheme {
 
     return base.copyWith(
       textTheme: base.textTheme.copyWith(
-        displayLarge: const TextStyle(
+        displayLarge: TextStyle(
           fontSize: 42,
           height: 1.05,
           fontWeight: FontWeight.w800,
           letterSpacing: -1.6,
+          color: scheme.onSurface,
         ),
-        displayMedium: const TextStyle(
+        displayMedium: TextStyle(
           fontSize: 34,
           height: 1.1,
           fontWeight: FontWeight.w800,
           letterSpacing: -1.2,
+          color: scheme.onSurface,
         ),
-        headlineMedium: const TextStyle(
+        headlineMedium: TextStyle(
           fontSize: 28,
           height: 1.15,
           fontWeight: FontWeight.w700,
           letterSpacing: -0.8,
+          color: scheme.onSurface,
         ),
-        titleLarge: const TextStyle(
+        titleLarge: TextStyle(
           fontSize: 20,
           height: 1.2,
           fontWeight: FontWeight.w700,
+          color: scheme.onSurface,
         ),
-        titleMedium: const TextStyle(
+        titleMedium: TextStyle(
           fontSize: 16,
           height: 1.3,
           fontWeight: FontWeight.w700,
+          color: scheme.onSurface,
         ),
-        bodyLarge: const TextStyle(
+        bodyLarge: TextStyle(
           fontSize: 15,
           height: 1.45,
           fontWeight: FontWeight.w500,
+          color: scheme.onSurface,
         ),
-        bodyMedium: const TextStyle(
+        bodyMedium: TextStyle(
           fontSize: 14,
           height: 1.4,
+          color: scheme.onSurface,
         ),
         bodySmall: TextStyle(
           fontSize: 12,
           height: 1.35,
           color: scheme.onSurfaceVariant,
         ),
-        labelLarge: const TextStyle(
+        labelLarge: TextStyle(
           fontSize: 14,
           fontWeight: FontWeight.w700,
           letterSpacing: 0.1,
+          color: scheme.onSurface,
         ),
       ),
       appBarTheme: AppBarTheme(
@@ -165,6 +173,15 @@ class AppTheme {
           color: scheme.onSurfaceVariant,
           fontWeight: FontWeight.w600,
         ),
+        hintStyle: TextStyle(
+          color: scheme.onSurfaceVariant.withAlpha(160),
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+      textSelectionTheme: TextSelectionThemeData(
+        cursorColor: scheme.primary,
+        selectionColor: scheme.primary.withAlpha(60),
+        selectionHandleColor: scheme.primary,
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: Colors.white.withAlpha(225),

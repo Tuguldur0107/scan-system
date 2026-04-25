@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../data/local/local_scan.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/scan_provider.dart';
 import '../../providers/task_provider.dart';
 import '../../widgets/scan_data_table.dart';
@@ -19,13 +21,20 @@ class DataTableScreen extends ConsumerStatefulWidget {
 }
 
 class _DataTableScreenState extends ConsumerState<DataTableScreen> {
+  static const _presetsKeyBase = 'data_filter_presets_v1';
   final _barcodeFilter = TextEditingController();
   final _sendIdFilter = TextEditingController();
   final _dateFilter = TextEditingController();
   final _taskFilter = TextEditingController();
   final _userFilter = TextEditingController();
+  final _batchFilter = TextEditingController();
+  final _sourceFilter = TextEditingController();
   bool _loading = false;
   String? _activePreset;
+  bool _loadingPresets = false;
+  List<Map<String, String>> _savedPresets = [];
+  String? _selectedSavedPreset;
+  String? _loadedForTenant;
 
   @override
   void initState() {
@@ -43,6 +52,8 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
     _dateFilter.dispose();
     _taskFilter.dispose();
     _userFilter.dispose();
+    _batchFilter.dispose();
+    _sourceFilter.dispose();
     super.dispose();
   }
 
@@ -55,12 +66,171 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
     if (mounted) setState(() => _loading = false);
   }
 
+  String _effectivePresetsKey() {
+    final auth = ref.read(authStateProvider);
+    final tenantId = (auth.user?['tenant_id'] ?? 'unknown').toString();
+    return '$_presetsKeyBase::$tenantId';
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_savedPresets.isEmpty && !_loadingPresets) {
+      _loadSavedPresets();
+    }
+  }
+
+  Future<void> _loadSavedPresets() async {
+    setState(() => _loadingPresets = true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getStringList(_effectivePresetsKey()) ?? const [];
+      _savedPresets = raw.map((entry) {
+        final parts = entry.split('||');
+        return <String, String>{
+          'name': parts.isNotEmpty ? parts[0] : '',
+          'barcode': parts.length > 1 ? parts[1] : '',
+          'sendId': parts.length > 2 ? parts[2] : '',
+          'date': parts.length > 3 ? parts[3] : '',
+          'task': parts.length > 4 ? parts[4] : '',
+          'user': parts.length > 5 ? parts[5] : '',
+          'batch': parts.length > 6 ? parts[6] : '',
+          'source': parts.length > 7 ? parts[7] : '',
+          'preset': parts.length > 8 ? parts[8] : '',
+        };
+      }).toList();
+      _loadedForTenant =
+          (ref.read(authStateProvider).user?['tenant_id'] ?? 'unknown').toString();
+    } finally {
+      if (mounted) setState(() => _loadingPresets = false);
+    }
+  }
+
+  Future<void> _saveCurrentPreset() async {
+    final nameController = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Filter preset хадгалах'),
+        content: TextField(
+          controller: nameController,
+          decoration: const InputDecoration(
+            labelText: 'Preset нэр',
+            hintText: 'Жишээ: Company-A | April batch',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) {
+      nameController.dispose();
+      return;
+    }
+
+    final presetName = nameController.text.trim();
+    nameController.dispose();
+    if (presetName.isEmpty) return;
+
+    final preset = <String, String>{
+      'name': presetName,
+      'barcode': _barcodeFilter.text,
+      'sendId': _sendIdFilter.text,
+      'date': _dateFilter.text,
+      'task': _taskFilter.text,
+      'user': _userFilter.text,
+      'batch': _batchFilter.text,
+      'source': _sourceFilter.text,
+      'preset': _activePreset ?? '',
+    };
+
+    _savedPresets.removeWhere((p) => p['name'] == presetName);
+    _savedPresets.insert(0, preset);
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _effectivePresetsKey(),
+      _savedPresets.map((p) {
+        return [
+          p['name'] ?? '',
+          p['barcode'] ?? '',
+          p['sendId'] ?? '',
+          p['date'] ?? '',
+          p['task'] ?? '',
+          p['user'] ?? '',
+          p['batch'] ?? '',
+          p['source'] ?? '',
+          p['preset'] ?? '',
+        ].join('||');
+      }).toList(),
+    );
+
+    if (mounted) {
+      setState(() => _selectedSavedPreset = presetName);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Preset хадгаллаа: $presetName')),
+      );
+    }
+  }
+
+  Future<void> _deleteSelectedPreset() async {
+    final selected = _selectedSavedPreset;
+    if (selected == null || selected.isEmpty) return;
+    _savedPresets.removeWhere((p) => p['name'] == selected);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _effectivePresetsKey(),
+      _savedPresets.map((p) {
+        return [
+          p['name'] ?? '',
+          p['barcode'] ?? '',
+          p['sendId'] ?? '',
+          p['date'] ?? '',
+          p['task'] ?? '',
+          p['user'] ?? '',
+          p['batch'] ?? '',
+          p['source'] ?? '',
+          p['preset'] ?? '',
+        ].join('||');
+      }).toList(),
+    );
+    if (mounted) {
+      setState(() => _selectedSavedPreset = null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Preset устгалаа: $selected')),
+      );
+    }
+  }
+
+  void _applySavedPreset(Map<String, String> p) {
+    _barcodeFilter.text = p['barcode'] ?? '';
+    _sendIdFilter.text = p['sendId'] ?? '';
+    _dateFilter.text = p['date'] ?? '';
+    _taskFilter.text = p['task'] ?? '';
+    _userFilter.text = p['user'] ?? '';
+    _batchFilter.text = p['batch'] ?? '';
+    _sourceFilter.text = p['source'] ?? '';
+    _activePreset = (p['preset'] ?? '').isEmpty ? null : p['preset'];
+    setState(() => _selectedSavedPreset = p['name']);
+  }
+
   bool get _hasManualFilters =>
       _barcodeFilter.text.isNotEmpty ||
       _sendIdFilter.text.isNotEmpty ||
       _dateFilter.text.isNotEmpty ||
       _taskFilter.text.isNotEmpty ||
-      _userFilter.text.isNotEmpty;
+      _userFilter.text.isNotEmpty ||
+      _batchFilter.text.isNotEmpty ||
+      _sourceFilter.text.isNotEmpty;
 
   bool get _hasFilters => _hasManualFilters || _activePreset != null;
 
@@ -70,6 +240,8 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
     _dateFilter.clear();
     _taskFilter.clear();
     _userFilter.clear();
+    _batchFilter.clear();
+    _sourceFilter.clear();
     setState(() => _activePreset = null);
   }
 
@@ -79,6 +251,8 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
     _dateFilter.clear();
     _taskFilter.clear();
     _userFilter.clear();
+    _batchFilter.clear();
+    _sourceFilter.clear();
     _activePreset = preset;
 
     final now = DateTime.now();
@@ -104,6 +278,8 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
     final d = _dateFilter.text.toLowerCase();
     final t = _taskFilter.text.toLowerCase();
     final u = _userFilter.text.toLowerCase();
+    final batch = _batchFilter.text.toLowerCase();
+    final source = _sourceFilter.text.toLowerCase();
 
     if (b.isNotEmpty) {
       result = result
@@ -132,6 +308,16 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
           .where((s) => (s.username ?? '').toLowerCase().contains(u))
           .toList();
     }
+    if (batch.isNotEmpty) {
+      result = result
+          .where((s) => (s.batchName ?? '').toLowerCase().contains(batch))
+          .toList();
+    }
+    if (source.isNotEmpty) {
+      result = result
+          .where((s) => (s.sourceFile ?? '').toLowerCase().contains(source))
+          .toList();
+    }
     if (_activePreset == 'pending') {
       result = result.where((s) => !s.synced).toList();
     } else if (_activePreset == 'synced') {
@@ -144,6 +330,14 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final authState = ref.watch(authStateProvider);
+    final tenantId = (authState.user?['tenant_id'] ?? 'unknown').toString();
+    final tenantLabel = tenantId.length > 12
+        ? '${tenantId.substring(0, 12)}...'
+        : tenantId;
+    if (_loadedForTenant != tenantId && !_loadingPresets) {
+      Future.microtask(_loadSavedPresets);
+    }
     final selectedTask = ref.watch(selectedTaskProvider);
     final allScans = ref.watch(scanProvider);
     final scans = selectedTask != null
@@ -212,7 +406,13 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
                   latestScan: latestScan,
                 ),
                 const SizedBox(height: 16),
-                _filterPanel(context, syncedCount, pendingCount, scans),
+                _filterPanel(
+                  context,
+                  syncedCount,
+                  pendingCount,
+                  scans,
+                  tenantLabel,
+                ),
                 const SizedBox(height: 16),
                 if (filtered.isEmpty)
                   AppEmptyView(
@@ -298,7 +498,15 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
     int syncedCount,
     int pendingCount,
     List<LocalScan> scans,
+    String tenantLabel,
   ) {
+    final batchOptions = scans
+        .map((s) => s.batchName ?? '')
+        .where((v) => v.trim().isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -331,6 +539,59 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String?>(
+                  value: _selectedSavedPreset,
+                  decoration: InputDecoration(
+                    labelText: 'Saved preset (tenant: $tenantLabel)',
+                    prefixIcon: const Icon(Icons.bookmark),
+                  ),
+                  items: [
+                    const DropdownMenuItem<String?>(
+                      value: null,
+                      child: Text('Preset сонгохгүй'),
+                    ),
+                    ..._savedPresets.map(
+                      (p) => DropdownMenuItem<String?>(
+                        value: p['name'],
+                        child: Text(p['name'] ?? ''),
+                      ),
+                    ),
+                  ],
+                  onChanged: _loadingPresets
+                      ? null
+                      : (name) {
+                          if (name == null || name.isEmpty) {
+                            setState(() => _selectedSavedPreset = null);
+                            return;
+                          }
+                          final found = _savedPresets.firstWhere(
+                            (p) => p['name'] == name,
+                            orElse: () => <String, String>{},
+                          );
+                          if (found.isNotEmpty) _applySavedPreset(found);
+                        },
+                ),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                onPressed: _saveCurrentPreset,
+                icon: const Icon(Icons.save),
+                label: const Text('Save'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _selectedSavedPreset == null
+                    ? null
+                    : _deleteSelectedPreset,
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('Delete'),
+              ),
+            ],
+          ),
           const SizedBox(height: 18),
           Wrap(
             spacing: 10,
@@ -346,15 +607,33 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
             ],
           ),
           const SizedBox(height: 18),
+          Text(
+            'Энэ preset-үүд зөвхөн одоогийн tenant дээр харагдана.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 10),
           Wrap(
             spacing: 12,
             runSpacing: 12,
             children: [
+              _dropdownFilter(
+                label: 'Batch',
+                icon: Icons.layers,
+                options: batchOptions,
+                selectedValue:
+                    _batchFilter.text.isEmpty ? null : _batchFilter.text,
+                onChanged: (value) {
+                  _batchFilter.text = value ?? '';
+                  setState(() {});
+                },
+              ),
               _filterField('Баркод', _barcodeFilter, Icons.qr_code),
               _filterField('Илгээсэн ID', _sendIdFilter, Icons.tag),
               _filterField('Огноо', _dateFilter, Icons.calendar_today),
               _filterField('Даалгавар', _taskFilter, Icons.task_alt),
               _filterField('Хэрэглэгч', _userFilter, Icons.person),
+              _filterField('Batch нэр', _batchFilter, Icons.layers),
+              _filterField('Source файл', _sourceFilter, Icons.insert_drive_file),
             ],
           ),
           if (_hasFilters) ...[
@@ -408,6 +687,38 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
           prefixIcon: Icon(icon),
           hintText: 'Шүүх...',
         ),
+      ),
+    );
+  }
+
+  Widget _dropdownFilter({
+    required String label,
+    required IconData icon,
+    required List<String> options,
+    required String? selectedValue,
+    required ValueChanged<String?> onChanged,
+  }) {
+    return SizedBox(
+      width: 220,
+      child: DropdownButtonFormField<String?>(
+        value: selectedValue,
+        decoration: InputDecoration(
+          labelText: label,
+          prefixIcon: Icon(icon),
+        ),
+        items: [
+          const DropdownMenuItem<String?>(
+            value: null,
+            child: Text('Бүгд'),
+          ),
+          ...options.map(
+            (o) => DropdownMenuItem<String?>(
+              value: o,
+              child: Text(o, overflow: TextOverflow.ellipsis),
+            ),
+          ),
+        ],
+        onChanged: onChanged,
       ),
     );
   }
@@ -560,14 +871,14 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
 
   String _generateCsv(List<LocalScan> scans) {
     final buf = StringBuffer();
-    buf.writeln('#,Баркод,Огноо,Цаг,Даалгавар,Хэрэглэгч');
+    buf.writeln('#,Баркод,Огноо,Цаг,Даалгавар,Хэрэглэгч,Batch,Source');
     for (var i = 0; i < scans.length; i++) {
       final s = scans[i];
       final dt = s.scannedAt;
       final date = '${dt.year}-${_two(dt.month)}-${_two(dt.day)}';
       final time = '${_two(dt.hour)}:${_two(dt.minute)}:${_two(dt.second)}';
       buf.writeln(
-        '${i + 1},${s.barcodeValue},$date,$time,${s.notes ?? '-'},${s.username ?? '-'}',
+        '${i + 1},${s.barcodeValue},$date,$time,${s.notes ?? '-'},${s.username ?? '-'},${s.batchName ?? '-'},${s.sourceFile ?? '-'}',
       );
     }
     return buf.toString();
@@ -582,4 +893,5 @@ class _DataTableScreenState extends ConsumerState<DataTableScreen> {
   }
 
   static String _two(int v) => v.toString().padLeft(2, '0');
+
 }

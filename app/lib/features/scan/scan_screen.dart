@@ -1,5 +1,4 @@
 import 'dart:async';
-
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -87,9 +86,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     });
   }
 
-  void _addBarcode(String value) {
-    final v = value.trim();
-    if (v.isEmpty) return;
+  bool _queueOneCode(String value) {
+    final original = value.trim();
+    if (original.isEmpty) return false;
+
+    final v = original;
+    if (v.isEmpty) return false;
 
     final selectedTask = ref.read(selectedTaskProvider);
     if (selectedTask == null || !selectedTask.isOpen) {
@@ -97,17 +99,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
         _feedbackError = true;
         _feedbackMessage = 'Нээлттэй task сонгоно уу';
       });
-      return;
+      return false;
     }
 
     final scanNotifier = ref.read(scanProvider.notifier);
     if (!scanNotifier.shouldAccept(v)) {
-      AudioService.instance.playError();
-      setState(() {
-        _feedbackError = true;
-        _feedbackMessage = 'Давхардсан scan алгасагдлаа';
-      });
-      return;
+      return false;
     }
 
     final authState = ref.read(authStateProvider);
@@ -118,10 +115,23 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       username: authState.user?['username'] as String?,
     );
     ref.read(tasksProvider.notifier).incrementScanCount(selectedTask.id);
+    return true;
+  }
+
+  void _addBarcode(String value) {
+    final ok = _queueOneCode(value);
+    if (!ok) {
+      AudioService.instance.playError();
+      setState(() {
+        _feedbackError = true;
+        _feedbackMessage = 'Давхардсан scan эсвэл буруу төлөв';
+      });
+      return;
+    }
 
     AudioService.instance.playBeep();
     setState(() {
-      _lastAdded = v;
+      _lastAdded = value.trim();
       _feedbackError = false;
       _feedbackMessage = 'Шинэ scan queue-д орлоо';
     });

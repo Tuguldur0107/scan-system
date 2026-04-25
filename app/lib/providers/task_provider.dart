@@ -3,6 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/api/projects_api.dart';
 
+final _uuidPattern = RegExp(
+  r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+);
+
+bool isServerTaskId(String id) => _uuidPattern.hasMatch(id);
+
 class TaskInfo {
   const TaskInfo({
     required this.id,
@@ -154,6 +160,54 @@ class TasksNotifier extends StateNotifier<List<TaskInfo>> {
       for (final t in state)
         if (t.id == taskId) t.copyWith(scanCount: t.scanCount + 1) else t,
     ];
+  }
+
+  /// If [localTaskId] is already a server UUID, returns it unchanged.
+  /// Otherwise looks up the local task, creates it on the server, swaps the
+  /// local id with the real UUID in state, and returns the new UUID.
+  ///
+  /// Throws when the task cannot be created on the server, so callers can
+  /// surface the failure (e.g. skip syncing affected scans).
+  Future<String> ensureSyncedToServer(
+    String localTaskId, {
+    String? tenantId,
+  }) async {
+    if (isServerTaskId(localTaskId)) return localTaskId;
+
+    final existing = state.where((t) => t.id == localTaskId).firstOrNull;
+    if (existing == null) {
+      throw StateError(
+        'Local task $localTaskId not found — cannot sync to server.',
+      );
+    }
+
+    final result = await _api.create(
+      tenantId: tenantId,
+      name: existing.name,
+      description: existing.description,
+      isOpen: existing.isOpen,
+    );
+    final created = TaskInfo.fromJson(result);
+
+    state = [
+      for (final t in state)
+        if (t.id == localTaskId)
+          TaskInfo(
+            id: created.id,
+            name: created.name,
+            description: created.description,
+            isOpen: created.isOpen,
+            scanCount: t.scanCount,
+            createdAt: created.createdAt ?? t.createdAt,
+          )
+        else
+          t,
+    ];
+
+    debugPrint(
+      '[TasksNotifier] Promoted local task $localTaskId → ${created.id}',
+    );
+    return created.id;
   }
 }
 

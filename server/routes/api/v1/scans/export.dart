@@ -19,7 +19,8 @@ Future<Response> onRequest(RequestContext context) async {
   );
 
   final buffer = StringBuffer();
-  buffer.writeln('barcode_value,barcode_format,scanned_at,notes,username,project_name');
+  buffer.writeln(
+      'barcode_value,barcode_format,scanned_at,notes,batch_name,source_file,send_id,username,project_name');
 
   for (final row in rows) {
     final values = [
@@ -27,6 +28,9 @@ Future<Response> onRequest(RequestContext context) async {
       _escapeCsv(row['barcode_format']?.toString() ?? ''),
       _escapeCsv(row['scanned_at']?.toString() ?? ''),
       _escapeCsv(row['notes']?.toString() ?? ''),
+      _escapeCsv(row['batch_name']?.toString() ?? ''),
+      _escapeCsv(row['source_file']?.toString() ?? ''),
+      _escapeCsv(row['send_id']?.toString() ?? ''),
       _escapeCsv(row['username']?.toString() ?? ''),
       _escapeCsv(row['project_name']?.toString() ?? ''),
     ];

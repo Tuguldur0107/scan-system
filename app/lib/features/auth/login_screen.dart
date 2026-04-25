@@ -329,6 +329,11 @@ class _LoginPanel extends StatelessWidget {
           const SizedBox(height: 24),
           TextField(
             controller: tenantController,
+            style: const TextStyle(
+              color: Color(0xFF142018),
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
             decoration: InputDecoration(
               labelText: S.tenantSlug,
               prefixIcon: const Icon(Icons.apartment_rounded),
@@ -339,6 +344,11 @@ class _LoginPanel extends StatelessWidget {
           const SizedBox(height: 16),
           TextField(
             controller: usernameController,
+            style: const TextStyle(
+              color: Color(0xFF142018),
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
             decoration: InputDecoration(
               labelText: S.username,
               prefixIcon: const Icon(Icons.person_rounded),
@@ -348,6 +358,11 @@ class _LoginPanel extends StatelessWidget {
           const SizedBox(height: 16),
           TextField(
             controller: passwordController,
+            style: const TextStyle(
+              color: Color(0xFF142018),
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
             decoration: InputDecoration(
               labelText: S.password,
               prefixIcon: const Icon(Icons.lock_rounded),

@@ -87,6 +87,10 @@ class _AppShellState extends ConsumerState<AppShell> {
                       icon: const Icon(Icons.qr_code_scanner),
                       label: S.scan,
                     ),
+                    const NavigationDestination(
+                      icon: Icon(Icons.sensors),
+                      label: 'UHF',
+                    ),
                     NavigationDestination(
                       icon: const Icon(Icons.hourglass_bottom),
                       label: S.pending,
@@ -112,8 +116,9 @@ class _AppShellState extends ConsumerState<AppShell> {
       return 0;
     } else {
       if (location.startsWith('/scan')) return 0;
-      if (location.startsWith('/pending')) return 1;
-      if (location.startsWith('/history')) return 2;
+      if (location.startsWith('/uhf') || location.startsWith('/convert')) return 1;
+      if (location.startsWith('/pending')) return 2;
+      if (location.startsWith('/history')) return 3;
       return 0;
     }
   }
@@ -135,8 +140,10 @@ class _AppShellState extends ConsumerState<AppShell> {
         case 0:
           context.go('/scan');
         case 1:
-          context.go('/pending');
+          context.go('/uhf');
         case 2:
+          context.go('/pending');
+        case 3:
           context.go('/history');
       }
     }

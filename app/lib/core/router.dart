@@ -3,7 +3,9 @@ import 'package:go_router/go_router.dart';
 
 import '../features/auth/login_screen.dart';
 import '../features/scan/scan_screen.dart';
+import '../features/scan/convert_screen.dart';
 import '../features/scan/pending_screen.dart';
+import '../features/scan/uhf_scan_screen.dart';
 import '../features/scan/history_screen.dart';
 import '../features/tasks/tasks_screen.dart';
 import '../features/data/data_table_screen.dart';
@@ -96,6 +98,14 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/scan',
             builder: (context, state) => const ScanScreen(),
+          ),
+          GoRoute(
+            path: '/convert',
+            builder: (context, state) => const ConvertScreen(),
+          ),
+          GoRoute(
+            path: '/uhf',
+            builder: (context, state) => const UhfScanScreen(),
           ),
           GoRoute(
             path: '/pending',

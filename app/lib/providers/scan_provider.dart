@@ -1,15 +1,18 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared/shared.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/api/scans_api.dart';
 import '../data/local/local_scan.dart';
+import 'task_provider.dart';
 
 const _uuid = Uuid();
 
 class ScanNotifier extends StateNotifier<List<LocalScan>> {
-  ScanNotifier() : super([]);
+  ScanNotifier(this._ref) : super([]);
 
+  final Ref _ref;
   final _api = ScansApi();
 
   String? _lastValue;
@@ -38,6 +41,8 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
           username: m['username']?.toString(),
           synced: true,
           sendId: metadata['send_id']?.toString(),
+          batchName: metadata['batch_name']?.toString(),
+          sourceFile: metadata['source_file']?.toString(),
         );
       }).toList();
 
@@ -70,6 +75,8 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
     required String barcodeValue,
     String? barcodeFormat,
     String? username,
+    String? batchName,
+    String? sourceFile,
   }) {
     final scan = LocalScan(
       id: _uuid.v4(),
@@ -79,6 +86,8 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
       scannedAt: DateTime.now(),
       notes: taskName,
       username: username,
+      batchName: batchName,
+      sourceFile: sourceFile,
     );
     state = [scan, ...state];
   }
@@ -103,15 +112,82 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
   Future<({int sent, int failed})> syncPending() async {
     final toSync = pending;
     if (toSync.isEmpty) return (sent: 0, failed: 0);
+
+    // Step 1: promote any local-only tasks to the server first, so every scan
+    // carries a real UUID project_id by the time we POST /scans/batch.
+    final localProjectIds = toSync
+        .map((s) => s.projectId)
+        .toSet()
+        .where((id) => !isServerTaskId(id))
+        .toList();
+
+    final projectIdMap = <String, String>{};
+    final taskSyncErrors = <String, String>{};
+
+    if (localProjectIds.isNotEmpty) {
+      final tasks = _ref.read(tasksProvider.notifier);
+      for (final localId in localProjectIds) {
+        try {
+          final serverId = await tasks.ensureSyncedToServer(localId);
+          projectIdMap[localId] = serverId;
+        } catch (e) {
+          debugPrint('[ScanNotifier] Task promotion failed for $localId: $e');
+          taskSyncErrors[localId] = e.toString();
+        }
+      }
+    }
+
+    // Reflect remapped project_ids in the in-memory scan list so later loads
+    // stay consistent with the server.
+    if (projectIdMap.isNotEmpty) {
+      state = [
+        for (final scan in state)
+          if (projectIdMap.containsKey(scan.projectId))
+            scan.copyWith(projectId: projectIdMap[scan.projectId])
+          else
+            scan,
+      ];
+    }
+
+    // Step 2: separate scans whose task could not be promoted — mark them
+    // failed and skip them from this sync pass.
+    final syncableSource = <LocalScan>[];
+    final skippedIds = <String>{};
+    for (final scan in pending) {
+      if (taskSyncErrors.containsKey(scan.projectId)) {
+        skippedIds.add(scan.id);
+        continue;
+      }
+      syncableSource.add(scan);
+    }
+
+    if (skippedIds.isNotEmpty) {
+      state = [
+        for (final s in state)
+          if (skippedIds.contains(s.id))
+            s.copyWith(
+              synced: false,
+              error:
+                  'Энэ scan-ы даалгаврыг серверт үүсгэж чадсангүй. Интернэт/нэвтрэлтээ шалгаад дахин оролдоно уу.',
+            )
+          else
+            s,
+      ];
+    }
+
+    if (syncableSource.isEmpty) {
+      return (sent: 0, failed: skippedIds.length);
+    }
+
     final sendId = _createSendId();
     final toSyncWithId = [
-      for (final scan in toSync)
+      for (final scan in syncableSource)
         scan.copyWith(sendId: sendId, clearError: true),
     ];
 
     state = [
       for (final scan in state)
-        if (toSync.any((pendingScan) => pendingScan.id == scan.id))
+        if (toSyncWithId.any((updated) => updated.id == scan.id))
           toSyncWithId.firstWhere((updated) => updated.id == scan.id)
         else
           scan,
@@ -134,7 +210,7 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
           else
             s,
       ];
-      return (sent: 0, failed: toSyncWithId.length);
+      return (sent: 0, failed: toSyncWithId.length + skippedIds.length);
     }
 
     state = [
@@ -145,7 +221,7 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
           s,
     ];
 
-    return (sent: toSyncWithId.length, failed: 0);
+    return (sent: toSyncWithId.length, failed: skippedIds.length);
   }
 
   void clearSynced() {
@@ -165,5 +241,5 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
 
 final scanProvider =
     StateNotifierProvider<ScanNotifier, List<LocalScan>>((ref) {
-  return ScanNotifier();
+  return ScanNotifier(ref);
 });

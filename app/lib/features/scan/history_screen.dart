@@ -19,10 +19,16 @@ class HistoryScreen extends ConsumerStatefulWidget {
 
 class _HistoryScreenState extends ConsumerState<HistoryScreen> {
   final _queryController = TextEditingController();
+  final _companyJobController = TextEditingController();
+  final _batchController = TextEditingController();
+  final _sourceController = TextEditingController();
 
   @override
   void dispose() {
     _queryController.dispose();
+    _companyJobController.dispose();
+    _batchController.dispose();
+    _sourceController.dispose();
     super.dispose();
   }
 
@@ -159,11 +165,11 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
 
   String _buildBatchTsv(List<dynamic> scans) {
     final rows = <String>[
-      'Send ID\tBarcode\tTask\tTime\tStatus',
+      'Send ID\tBarcode\tTask\tBatch\tSource\tTime\tStatus',
     ];
     for (final scan in scans) {
       rows.add(
-        '${scan.sendId ?? '-'}\t${scan.barcodeValue}\t${scan.notes ?? '-'}\t${_formatDateTime(scan.scannedAt)}\t${scan.synced ? 'Synced' : 'Pending'}',
+        '${scan.sendId ?? '-'}\t${scan.barcodeValue}\t${scan.notes ?? '-'}\t${scan.batchName ?? '-'}\t${scan.sourceFile ?? '-'}\t${_formatDateTime(scan.scannedAt)}\t${scan.synced ? 'Synced' : 'Pending'}',
       );
     }
     return rows.join('\n');
@@ -173,10 +179,19 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
   Widget build(BuildContext context) {
     final scans = ref.watch(scanProvider);
     final query = _queryController.text.trim().toLowerCase();
+    final companyJob = _companyJobController.text.trim().toLowerCase();
+    final batch = _batchController.text.trim().toLowerCase();
+    final source = _sourceController.text.trim().toLowerCase();
     final synced = scans.where((s) => s.synced).where((scan) {
-      if (query.isEmpty) return true;
-      return scan.barcodeValue.toLowerCase().contains(query) ||
+      final queryOk = query.isEmpty ||
+          scan.barcodeValue.toLowerCase().contains(query) ||
           (scan.sendId ?? '').toLowerCase().contains(query);
+      final companyJobOk =
+          companyJob.isEmpty || (scan.notes ?? '').toLowerCase().contains(companyJob);
+      final batchOk = batch.isEmpty || (scan.batchName ?? '').toLowerCase().contains(batch);
+      final sourceOk =
+          source.isEmpty || (scan.sourceFile ?? '').toLowerCase().contains(source);
+      return queryOk && companyJobOk && batchOk && sourceOk;
     }).toList();
     final pendingCount = scans.where((s) => !s.synced).length;
     final selectedTask = ref.watch(selectedTaskProvider);
@@ -235,6 +250,41 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
               hintText: 'Barcode эсвэл send ID хайх',
             ),
           ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _companyJobController,
+            onChanged: (_) => setState(() {}),
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.business),
+              hintText: 'Компани / Job (task нэрээр)',
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _batchController,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.layers),
+                    hintText: 'Batch нэр',
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextField(
+                  controller: _sourceController,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.insert_drive_file),
+                    hintText: 'Source файл',
+                  ),
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 18),
           if (synced.isEmpty)
             const AppEmptyView(
@@ -286,6 +336,16 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                               '${s.notes ?? ''} • $date $time',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
+                            if ((s.batchName ?? '').isNotEmpty ||
+                                (s.sourceFile ?? '').isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                'Batch: ${s.batchName ?? '-'} • Source: ${s.sourceFile ?? '-'}',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: Theme.of(context).colorScheme.outline,
+                                    ),
+                              ),
+                            ],
                             if ((s.sendId ?? '').isNotEmpty) ...[
                               const SizedBox(height: 6),
                               InkWell(

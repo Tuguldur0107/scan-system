@@ -20,23 +20,39 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.scansystem.scan_system_app"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // Chainway DeviceAPI requires minSdk >= 26.
+        minSdk = 26
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // The Chainway AAR only ships arm ABIs (no x86_64) so we restrict
+        // to those to avoid APK bloat and emulator crashes on missing .so's.
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
+    }
+
+    packaging {
+        // Chainway .so files ship uncompressed in the AAR; keep them that way
+        // so Android's UncompressedNativeLibs requirement is satisfied.
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+}
+
+dependencies {
+    // Chainway UHF DeviceAPI AAR (see app/libs/DeviceAPI_ver20250209_release.aar).
+    // The flatDir repo is registered in the root build.gradle.kts.
+    implementation(group = "", name = "DeviceAPI_ver20250209_release", ext = "aar")
 }
 
 flutter {

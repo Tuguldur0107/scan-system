@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:postgres/postgres.dart';
 
 import 'base_repository.dart';
@@ -27,7 +29,8 @@ class ScanRepository extends BaseRepository {
         'barcode_format': barcodeFormat,
         'scanned_at': scannedAt,
         'notes': notes,
-        'metadata': metadata.toString(),
+        // jsonb expects valid JSON; Map.toString() is not JSON.
+        'metadata': jsonEncode(metadata),
       },
     );
     return _rowToMap(result.first);
@@ -153,6 +156,9 @@ class ScanRepository extends BaseRepository {
     final result = await db.execute(
       Sql.named(
         '''SELECT s.barcode_value, s.barcode_format, s.scanned_at, s.notes,
+                  s.metadata->>'batch_name' as batch_name,
+                  s.metadata->>'source_file' as source_file,
+                  s.metadata->>'send_id' as send_id,
                   u.username, p.name as project_name
            FROM scans s
            JOIN users u ON s.user_id = u.id
@@ -170,6 +176,9 @@ class ScanRepository extends BaseRepository {
         'barcode_format': m['barcode_format'],
         'scanned_at': m['scanned_at']?.toString(),
         'notes': m['notes'],
+        'batch_name': m['batch_name'],
+        'source_file': m['source_file'],
+        'send_id': m['send_id'],
         'username': m['username'],
         'project_name': m['project_name'],
       };
