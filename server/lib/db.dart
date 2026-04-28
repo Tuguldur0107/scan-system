@@ -47,6 +47,8 @@ class Database {
       '002_rls_policies': _migration002,
       '003_seed_super_admin': _migration003,
       '004_project_is_open': _migration004,
+      '005_epc_counters': _migration005,
+      '006_scans_kind': _migration006,
     };
 
     for (final entry in migrations.entries) {
@@ -175,4 +177,59 @@ SELECT 1;
 const _migration004 = '''
 ALTER TABLE projects
 ADD COLUMN IF NOT EXISTS is_open BOOLEAN NOT NULL DEFAULT true;
+''';
+
+/// EPC serial counter per (tenant, gtin14). Used by the web Barcode → EPC
+/// importer to assign cumulative serial numbers across uploads, so each
+/// physical item gets a unique SGTIN-96 EPC and total counts can be tracked.
+const _migration005 = '''
+CREATE TABLE IF NOT EXISTS epc_counters (
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  gtin14 TEXT NOT NULL,
+  last_serial BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (tenant_id, gtin14)
+);
+
+CREATE INDEX IF NOT EXISTS idx_epc_counters_tenant ON epc_counters(tenant_id);
+''';
+
+/// Classifies each scan by source so the task UI can split scans into three
+/// tabs (manual barcode scan vs. web Excel→EPC import vs. C5 EPC reader)
+/// instead of mixing them in one table.
+///
+/// Allowed values:
+/// - 'barcode_scan' — mobile camera scan or manual entry of a printed barcode.
+/// - 'epc_import'   — web upload of a packing list / Excel that gets
+///                    converted to SGTIN-96 EPCs.
+/// - 'epc_read'     — UHF RFID tags read by the C5 hand reader (the EPC is
+///                    the truth, the barcode column is its decoded GTIN).
+///
+/// Existing rows are backfilled from `barcode_format` and `metadata`:
+/// - `metadata->>'import_kind' = 'web_barcode_to_sgtin96_epc'` → `epc_import`.
+/// - `barcode_format` ∈ {'EPC', 'EPC->BARCODE', 'SGTIN-96'} → `epc_read`
+///   when not flagged as an import (the import sets SGTIN-96 with the
+///   `import_kind` flag so the previous rule wins for those rows).
+/// - everything else → `barcode_scan`.
+const _migration006 = '''
+ALTER TABLE scans
+ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'barcode_scan';
+
+UPDATE scans
+SET kind = CASE
+  WHEN metadata->>'import_kind' = 'web_barcode_to_sgtin96_epc' THEN 'epc_import'
+  WHEN barcode_format IN ('EPC', 'EPC->BARCODE') THEN 'epc_read'
+  WHEN barcode_format = 'SGTIN-96' AND (metadata ? 'import_kind') = false THEN 'epc_read'
+  ELSE 'barcode_scan'
+END
+WHERE kind = 'barcode_scan';
+
+ALTER TABLE scans
+DROP CONSTRAINT IF EXISTS scans_kind_check;
+
+ALTER TABLE scans
+ADD CONSTRAINT scans_kind_check
+CHECK (kind IN ('barcode_scan', 'epc_import', 'epc_read'));
+
+CREATE INDEX IF NOT EXISTS idx_scans_kind ON scans(tenant_id, project_id, kind);
 ''';

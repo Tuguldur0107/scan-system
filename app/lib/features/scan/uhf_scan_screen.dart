@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/epc_converter.dart';
+import '../../data/local/local_scan.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/scan_provider.dart';
 import '../../providers/task_provider.dart';
@@ -255,6 +256,7 @@ class _UhfScanScreenState extends ConsumerState<UhfScanScreen> {
         username: auth.user?['username'] as String?,
         batchName: batchName.isEmpty ? null : batchName,
         sourceFile: 'UHF live',
+        kind: ScanKind.epcRead,
       );
       tasks.incrementScanCount(selected.id);
       added++;

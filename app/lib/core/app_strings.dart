@@ -54,6 +54,10 @@ class S {
   static String get taskClosed => _t('This task is closed', 'Энэ даалгавар хаалттай');
   static String get description => _t('Description', 'Тайлбар');
   static String get data => _t('Data', 'Дата');
+  static String get barcodeEpcImport => _t(
+        'Barcode → EPC',
+        'Баркод → EPC',
+      );
 
   // History
   static String get clearHistory => _t('Clear history?', 'Түүх цэвэрлэх?');

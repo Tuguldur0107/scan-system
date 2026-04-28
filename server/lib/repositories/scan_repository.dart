@@ -5,6 +5,23 @@ import 'package:postgres/postgres.dart';
 import 'base_repository.dart';
 
 class ScanRepository extends BaseRepository {
+  /// Allowed values for `scans.kind` (matches the DB CHECK constraint added
+  /// in migration `006_scans_kind`).
+  static const Set<String> kindValues = {
+    'barcode_scan',
+    'epc_import',
+    'epc_read',
+  };
+
+  /// Falls back to `barcode_scan` for any unknown / null `kind` so we never
+  /// violate the DB CHECK constraint and the row still appears under the
+  /// "scan + manual entry" tab.
+  static String _normalizeKind(String? raw) {
+    if (raw == null) return 'barcode_scan';
+    final v = raw.trim();
+    return kindValues.contains(v) ? v : 'barcode_scan';
+  }
+
   Future<Map<String, dynamic>> create({
     required String tenantId,
     required String projectId,
@@ -14,11 +31,12 @@ class ScanRepository extends BaseRepository {
     required DateTime scannedAt,
     String? notes,
     Map<String, dynamic> metadata = const {},
+    String? kind,
   }) async {
     final result = await db.execute(
       Sql.named(
-        '''INSERT INTO scans (tenant_id, project_id, user_id, barcode_value, barcode_format, scanned_at, notes, metadata)
-           VALUES (@tenant_id, @project_id, @user_id, @barcode_value, @barcode_format, @scanned_at, @notes, @metadata::jsonb)
+        '''INSERT INTO scans (tenant_id, project_id, user_id, barcode_value, barcode_format, scanned_at, notes, metadata, kind)
+           VALUES (@tenant_id, @project_id, @user_id, @barcode_value, @barcode_format, @scanned_at, @notes, @metadata::jsonb, @kind)
            RETURNING *''',
       ),
       parameters: {
@@ -31,6 +49,7 @@ class ScanRepository extends BaseRepository {
         'notes': notes,
         // jsonb expects valid JSON; Map.toString() is not JSON.
         'metadata': jsonEncode(metadata),
+        'kind': _normalizeKind(kind),
       },
     );
     return _rowToMap(result.first);
@@ -52,6 +71,7 @@ class ScanRepository extends BaseRepository {
         scannedAt: DateTime.parse(scan['scanned_at'] as String),
         notes: scan['notes'] as String?,
         metadata: scan['metadata'] as Map<String, dynamic>? ?? {},
+        kind: scan['kind'] as String?,
       );
       results.add(r);
     }
@@ -67,6 +87,7 @@ class ScanRepository extends BaseRepository {
     String? search,
     DateTime? from,
     DateTime? to,
+    String? kind,
   }) async {
     final where = <String>['s.tenant_id = @tenant_id'];
     final params = <String, dynamic>{'tenant_id': tenantId};
@@ -78,6 +99,10 @@ class ScanRepository extends BaseRepository {
     if (userId != null) {
       where.add('s.user_id = @user_id');
       params['user_id'] = userId;
+    }
+    if (kind != null && kind.isNotEmpty) {
+      where.add('s.kind = @kind');
+      params['kind'] = _normalizeKind(kind);
     }
     if (search != null && search.isNotEmpty) {
       where.add('s.barcode_value ILIKE @search');
@@ -134,6 +159,7 @@ class ScanRepository extends BaseRepository {
     String? projectId,
     DateTime? from,
     DateTime? to,
+    String? kind,
   }) async {
     final where = <String>['s.tenant_id = @tenant_id'];
     final params = <String, dynamic>{'tenant_id': tenantId};
@@ -141,6 +167,10 @@ class ScanRepository extends BaseRepository {
     if (projectId != null) {
       where.add('s.project_id = @project_id');
       params['project_id'] = projectId;
+    }
+    if (kind != null && kind.isNotEmpty) {
+      where.add('s.kind = @kind');
+      params['kind'] = _normalizeKind(kind);
     }
     if (from != null) {
       where.add('s.scanned_at >= @from');
@@ -155,7 +185,7 @@ class ScanRepository extends BaseRepository {
 
     final result = await db.execute(
       Sql.named(
-        '''SELECT s.barcode_value, s.barcode_format, s.scanned_at, s.notes,
+        '''SELECT s.barcode_value, s.barcode_format, s.kind, s.scanned_at, s.notes,
                   s.metadata->>'batch_name' as batch_name,
                   s.metadata->>'source_file' as source_file,
                   s.metadata->>'send_id' as send_id,
@@ -174,6 +204,7 @@ class ScanRepository extends BaseRepository {
       return {
         'barcode_value': m['barcode_value'],
         'barcode_format': m['barcode_format'],
+        'kind': _normalizeKind(m['kind'] as String?),
         'scanned_at': m['scanned_at']?.toString(),
         'notes': m['notes'],
         'batch_name': m['batch_name'],
@@ -281,6 +312,7 @@ class ScanRepository extends BaseRepository {
       'synced_at': schema['synced_at']?.toString(),
       'notes': schema['notes'],
       'metadata': schema['metadata'] ?? {},
+      'kind': _normalizeKind(schema['kind'] as String?),
       'created_at': schema['created_at']?.toString(),
     };
   }

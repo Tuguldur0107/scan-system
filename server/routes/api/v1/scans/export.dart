@@ -14,18 +14,20 @@ Future<Response> onRequest(RequestContext context) async {
   final rows = await scanRepo.exportCsv(
     tc.tenantId,
     projectId: params['project_id'],
+    kind: params['kind'],
     from: params['from'] != null ? DateTime.tryParse(params['from']!) : null,
     to: params['to'] != null ? DateTime.tryParse(params['to']!) : null,
   );
 
   final buffer = StringBuffer();
   buffer.writeln(
-      'barcode_value,barcode_format,scanned_at,notes,batch_name,source_file,send_id,username,project_name');
+      'barcode_value,barcode_format,kind,scanned_at,notes,batch_name,source_file,send_id,username,project_name');
 
   for (final row in rows) {
     final values = [
       _escapeCsv(row['barcode_value']?.toString() ?? ''),
       _escapeCsv(row['barcode_format']?.toString() ?? ''),
+      _escapeCsv(row['kind']?.toString() ?? ''),
       _escapeCsv(row['scanned_at']?.toString() ?? ''),
       _escapeCsv(row['notes']?.toString() ?? ''),
       _escapeCsv(row['batch_name']?.toString() ?? ''),

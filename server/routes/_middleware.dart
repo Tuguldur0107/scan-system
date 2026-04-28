@@ -8,6 +8,7 @@ import 'package:server/repositories/project_repository.dart';
 import 'package:server/repositories/scan_repository.dart';
 import 'package:server/repositories/refresh_token_repository.dart';
 import 'package:server/repositories/audit_repository.dart';
+import 'package:server/repositories/epc_counter_repository.dart';
 import 'package:server/services/auth_service.dart';
 import 'package:server/services/seed_service.dart';
 
@@ -28,6 +29,7 @@ Handler middleware(Handler handler) {
       )
       .use(provider<AuditRepository>((_) => AuditRepository()))
       .use(provider<RefreshTokenRepository>((_) => RefreshTokenRepository()))
+      .use(provider<EpcCounterRepository>((_) => EpcCounterRepository()))
       .use(provider<ScanRepository>((_) => ScanRepository()))
       .use(provider<ProjectRepository>((_) => ProjectRepository()))
       .use(provider<UserRepository>((_) => UserRepository()))

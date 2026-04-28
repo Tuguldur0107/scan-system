@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../core/app_strings.dart';
+import '../../data/local/local_scan.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/scan_provider.dart';
 import '../../providers/task_provider.dart';
@@ -113,6 +114,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       taskName: selectedTask.name,
       barcodeValue: v,
       username: authState.user?['username'] as String?,
+      kind: ScanKind.barcodeScan,
     );
     ref.read(tasksProvider.notifier).incrementScanCount(selectedTask.id);
     return true;

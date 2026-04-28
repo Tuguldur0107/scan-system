@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/epc_converter.dart';
+import '../../data/local/local_scan.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/scan_provider.dart';
 import '../../providers/task_provider.dart';
@@ -179,6 +180,7 @@ class _ConvertScreenState extends ConsumerState<ConvertScreen> {
             ? null
             : batchNameController.text.trim(),
         sourceFile: sourceFileName.isEmpty ? null : sourceFileName,
+        kind: ScanKind.epcRead,
       );
       ref.read(tasksProvider.notifier).incrementScanCount(selectedTask.id);
       added++;

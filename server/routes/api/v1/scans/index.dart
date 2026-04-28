@@ -20,6 +20,7 @@ Future<Response> onRequest(RequestContext context) async {
         perPage: perPage,
         projectId: params['project_id'],
         userId: params['user_id'],
+        kind: params['kind'],
         search: params['search'],
         from: params['from'] != null ? DateTime.tryParse(params['from']!) : null,
         to: params['to'] != null ? DateTime.tryParse(params['to']!) : null,
@@ -43,6 +44,7 @@ Future<Response> onRequest(RequestContext context) async {
         scannedAt: DateTime.parse(body['scanned_at'] as String),
         notes: body['notes'] as String?,
         metadata: body['metadata'] as Map<String, dynamic>? ?? {},
+        kind: body['kind'] as String?,
       );
       return Response.json(statusCode: 201, body: scan);
 

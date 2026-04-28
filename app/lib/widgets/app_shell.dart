@@ -69,6 +69,10 @@ class _AppShellState extends ConsumerState<AppShell> {
                       label: S.scan,
                     ),
                     NavigationDestination(
+                      icon: const Icon(Icons.transform),
+                      label: S.barcodeEpcImport,
+                    ),
+                    NavigationDestination(
                       icon: const Icon(Icons.task_alt),
                       label: S.tasks,
                     ),
@@ -108,11 +112,13 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   int _currentIndex(BuildContext context) {
     final location = GoRouterState.of(context).matchedLocation;
+    final isAdmin = ref.read(authStateProvider).isTenantAdmin;
     if (kIsWeb) {
       if (location.startsWith('/scan')) return 0;
-      if (location.startsWith('/tasks')) return 1;
-      if (location.startsWith('/data')) return 2;
-      if (location.startsWith('/admin')) return 3;
+      if (location.startsWith('/import/barcode-epc')) return 1;
+      if (location.startsWith('/tasks')) return 2;
+      if (location.startsWith('/data')) return 3;
+      if (location.startsWith('/admin')) return isAdmin ? 4 : 0;
       return 0;
     } else {
       if (location.startsWith('/scan')) return 0;
@@ -128,23 +134,34 @@ class _AppShellState extends ConsumerState<AppShell> {
       switch (index) {
         case 0:
           context.go('/scan');
+          break;
         case 1:
-          context.go('/tasks');
+          context.go('/import/barcode-epc');
+          break;
         case 2:
-          context.go('/data');
+          context.go('/tasks');
+          break;
         case 3:
+          context.go('/data');
+          break;
+        case 4:
           context.go('/admin');
+          break;
       }
     } else {
       switch (index) {
         case 0:
           context.go('/scan');
+          break;
         case 1:
           context.go('/uhf');
+          break;
         case 2:
           context.go('/pending');
+          break;
         case 3:
           context.go('/history');
+          break;
       }
     }
   }

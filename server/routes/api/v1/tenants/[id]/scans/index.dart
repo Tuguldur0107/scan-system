@@ -26,6 +26,7 @@ Future<Response> onRequest(RequestContext context, String id) async {
     perPage: perPage,
     projectId: params['project_id'],
     userId: params['user_id'],
+    kind: params['kind'],
     search: params['search'],
     from: params['from'] != null ? DateTime.tryParse(params['from']!) : null,
     to: params['to'] != null ? DateTime.tryParse(params['to']!) : null,

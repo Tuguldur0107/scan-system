@@ -43,6 +43,7 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
           sendId: metadata['send_id']?.toString(),
           batchName: metadata['batch_name']?.toString(),
           sourceFile: metadata['source_file']?.toString(),
+          kind: m['kind']?.toString(),
         );
       }).toList();
 
@@ -77,6 +78,7 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
     String? username,
     String? batchName,
     String? sourceFile,
+    String? kind,
   }) {
     final scan = LocalScan(
       id: _uuid.v4(),
@@ -88,6 +90,7 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
       username: username,
       batchName: batchName,
       sourceFile: sourceFile,
+      kind: kind,
     );
     state = [scan, ...state];
   }

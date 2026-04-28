@@ -6,9 +6,10 @@ import '../features/scan/scan_screen.dart';
 import '../features/scan/convert_screen.dart';
 import '../features/scan/pending_screen.dart';
 import '../features/scan/uhf_scan_screen.dart';
+import '../features/scan/web_barcode_epc_import_screen.dart';
 import '../features/scan/history_screen.dart';
 import '../features/tasks/tasks_screen.dart';
-import '../features/data/data_table_screen.dart';
+import '../features/data/task_tabs_screen.dart';
 import '../features/admin/admin_screen.dart';
 import '../features/super_admin/tenants_screen.dart';
 import '../features/super_admin/create_tenant_screen.dart';
@@ -116,14 +117,27 @@ final routerProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const HistoryScreen(),
           ),
           GoRoute(
+            path: '/import/barcode-epc',
+            builder: (context, state) => const WebBarcodeEpcImportScreen(),
+          ),
+          GoRoute(
             path: '/tasks',
             builder: (context, state) => const TasksScreen(),
           ),
           GoRoute(
             path: '/data',
-            builder: (context, state) => DataTableScreen(
-              initialSendId: state.uri.queryParameters['sendId'],
-            ),
+            builder: (context, state) {
+              final tabParam = state.uri.queryParameters['tab'];
+              final initialTab = switch (tabParam) {
+                'epc-import' || '2' || 'epc_import' => 1,
+                'epc-read' || '3' || 'epc_read' => 2,
+                _ => 0,
+              };
+              return TaskTabsScreen(
+                initialSendId: state.uri.queryParameters['sendId'],
+                initialTab: initialTab,
+              );
+            },
           ),
           GoRoute(
             path: '/admin',

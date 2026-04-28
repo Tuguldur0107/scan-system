@@ -85,6 +85,107 @@ class EpcConverter {
     );
   }
 
+  static bool _isDigits(String digits, int len) =>
+      digits.length == len && RegExp(r'^\d+$').hasMatch(digits);
+
+  static bool isValidGtin12(String digits) {
+    if (!_isDigits(digits, 12)) return false;
+    final expected = _computeGs1CheckDigit(digits.substring(0, 11));
+    return expected == int.tryParse(digits[11]);
+  }
+
+  static bool isValidGtin13(String digits) {
+    if (!_isDigits(digits, 13)) return false;
+    final expected = _computeGs1CheckDigit(digits.substring(0, 12));
+    return expected == int.tryParse(digits[12]);
+  }
+
+  static bool isValidGtin14(String digits) {
+    if (!_isDigits(digits, 14)) return false;
+    final expected = _computeGs1CheckDigit(digits.substring(0, 13));
+    return expected == int.tryParse(digits[13]);
+  }
+
+  /// Normalizes numeric input to a valid **GTIN-14** string (check digit on
+  /// the first 13 digits), using GS1 padding rules:
+  /// - Already valid GTIN-14: keep unchanged.
+  /// - Valid GTIN-13 (EAN-13): prefix `0` and keep existing check.
+  /// - Valid GTIN-12 (UPC-A): prefix `00` and keep existing check.
+  /// - Shorter codes: left-pad with zeros to 14, then set the check digit.
+  static String? normalizeToGtin14(String raw) {
+    var digits = raw.trim().replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.isEmpty) return null;
+    if (digits.length > 14) return null;
+
+    if (digits.length == 14 && isValidGtin14(digits)) {
+      return digits;
+    }
+    if (digits.length == 13 && isValidGtin13(digits)) {
+      return '0$digits';
+    }
+    if (digits.length == 12 && isValidGtin12(digits)) {
+      return '00$digits';
+    }
+
+    while (digits.length < 14) {
+      digits = '0$digits';
+    }
+    final core = digits.substring(0, 13);
+    final check = _computeGs1CheckDigit(core);
+    return '$core$check';
+  }
+
+  static EpcConverterResult? barcodeToSgtin96Epc(
+    String raw, {
+    int? serial,
+  }) {
+    final gtin14 = normalizeToGtin14(raw);
+    if (gtin14 == null) return null;
+    return encodeSgtin96FromGtin14(gtin14, serial: serial);
+  }
+
+  static EpcConverterResult? encodeSgtin96FromGtin14(
+    String gtin14, {
+    int? serial,
+  }) {
+    if (!isValidGtin14(gtin14)) return null;
+
+    final core13 = gtin14.substring(0, 13);
+    final partition = _digitsToPartition[_companyPrefixDigits] ?? 5;
+    final (cpBits, cpDigits, itemBits, itemDigits) = _partitionTable[partition];
+
+    final companyPrefix = core13.substring(0, cpDigits);
+    final itemReference = core13.substring(cpDigits, cpDigits + itemDigits);
+
+    final cpValue = int.parse(companyPrefix);
+    final itemValue = int.parse(itemReference);
+    // The SGTIN-96 serial field is 38 bits wide. We MUST do this clamp with
+    // `BigInt`, because on dart2js the native `int << n` operator only
+    // supports n <= 31 — `1 << 38` throws `Infinity or NaN toInt`, which
+    // surfaces as a generic "Хөрвүүлэлтийн алдаа" in the UI on web.
+    final serialBig = (serial == null || serial < 0)
+        ? BigInt.parse(gtin14)
+        : BigInt.from(serial);
+    final serialNum = (serialBig % (BigInt.one << 38)).toInt();
+    final serialBits =
+        BigInt.from(serialNum).toRadixString(2).padLeft(38, '0');
+
+    final bits =
+        _toBits(_sgtin96Header, 8) +
+        _toBits(_defaultFilter, 3) +
+        _toBits(partition, 3) +
+        _toBits(cpValue, cpBits) +
+        _toBits(itemValue, itemBits) +
+        serialBits;
+
+    final epc =
+        BigInt.parse(bits, radix: 2).toRadixString(16).toUpperCase().padLeft(24, '0');
+    return EpcConverterResult(
+      value: epc,
+      message: 'Barcode хувиргав: $gtin14 -> $epc (CP:$cpDigits)',
+    );
+  }
+
   static EpcConverterResult? tryConvertToEpc(String raw) {
     final barcode = raw.trim().replaceAll(RegExp(r'[^0-9]'), '');
     if (barcode.length != 14) return null;
@@ -94,28 +195,7 @@ class EpcConverter {
     final actual = int.tryParse(barcode.substring(13));
     if (actual == null || expected != actual) return null;
 
-    final partition = _digitsToPartition[_companyPrefixDigits] ?? 5;
-    final (cpBits, cpDigits, itemBits, itemDigits) = _partitionTable[partition];
-    final companyPrefix = core13.substring(0, cpDigits);
-    final itemReference = core13.substring(cpDigits, cpDigits + itemDigits);
-
-    final cpValue = int.parse(companyPrefix);
-    final itemValue = int.parse(itemReference);
-
-    final serial = BigInt.parse(barcode) % (BigInt.one << 38);
-    final bits =
-        _toBits(_sgtin96Header, 8) +
-        _toBits(_defaultFilter, 3) +
-        _toBits(partition, 3) +
-        _toBits(cpValue, cpBits) +
-        _toBits(itemValue, itemBits) +
-        serial.toRadixString(2).padLeft(38, '0');
-
-    final epc = BigInt.parse(bits, radix: 2).toRadixString(16).toUpperCase().padLeft(24, '0');
-    return EpcConverterResult(
-      value: epc,
-      message: 'Barcode хувиргав: $barcode -> $epc (CP:$cpDigits)',
-    );
+    return encodeSgtin96FromGtin14(barcode);
   }
 
   static int _bitsToInt(String value) => int.parse(value, radix: 2);
