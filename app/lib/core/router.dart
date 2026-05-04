@@ -7,6 +7,7 @@ import '../features/scan/convert_screen.dart';
 import '../features/scan/pending_screen.dart';
 import '../features/scan/uhf_scan_screen.dart';
 import '../features/scan/web_barcode_epc_import_screen.dart';
+import '../features/scan/web_packing_list_import_screen.dart';
 import '../features/scan/history_screen.dart';
 import '../features/tasks/tasks_screen.dart';
 import '../features/data/task_tabs_screen.dart';
@@ -121,6 +122,10 @@ final routerProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const WebBarcodeEpcImportScreen(),
           ),
           GoRoute(
+            path: '/import/packing-list',
+            builder: (context, state) => const WebPackingListImportScreen(),
+          ),
+          GoRoute(
             path: '/tasks',
             builder: (context, state) => const TasksScreen(),
           ),
@@ -131,6 +136,7 @@ final routerProvider = Provider<GoRouter>((ref) {
               final initialTab = switch (tabParam) {
                 'epc-import' || '2' || 'epc_import' => 1,
                 'epc-read' || '3' || 'epc_read' => 2,
+                'receiving' || '4' || 'packing_list' || 'packing-list' => 3,
                 _ => 0,
               };
               return TaskTabsScreen(

@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/epc_converter.dart';
 import '../../data/local/local_scan.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/scan_provider.dart';
@@ -234,21 +233,19 @@ class _UhfScanScreenState extends ConsumerState<UhfScanScreen> {
     var added = 0;
     var skipped = 0;
     for (final row in _tags.values.toList()) {
-      String value = row.epc;
-      String format = 'EPC';
-      if (_autoConvert) {
-        final converted = EpcConverter.tryConvertToBarcode(row.epc);
-        final barcode = converted?.value;
-        if (barcode != null && barcode.isNotEmpty) {
-          value = barcode;
-          format = 'EPC->BARCODE';
-        }
-      }
+      final value = row.epc;
+      final format = 'EPC';
+      // Keep raw EPC as the canonical stored value for this flow.
+      // Decoding to barcode is a view concern in the "EPC -> Barcode" tab,
+      // so operators always see the actual tag EPC they scanned.
       if (!scans.shouldAccept(value)) {
         skipped++;
         continue;
       }
-      scans.addScan(
+      // `addScan` itself dedups across the task (same EPC twice = skipped),
+      // so re-scanning a previously-saved tag won't add a duplicate row even
+      // after the cooldown window expires.
+      final wasAdded = scans.addScan(
         taskId: selected.id,
         taskName: selected.name,
         barcodeValue: value,
@@ -258,8 +255,12 @@ class _UhfScanScreenState extends ConsumerState<UhfScanScreen> {
         sourceFile: 'UHF live',
         kind: ScanKind.epcRead,
       );
-      tasks.incrementScanCount(selected.id);
-      added++;
+      if (wasAdded) {
+        tasks.incrementScanCount(selected.id);
+        added++;
+      } else {
+        skipped++;
+      }
     }
 
     if (!mounted) return;
@@ -545,11 +546,15 @@ class _UhfScanScreenState extends ConsumerState<UhfScanScreen> {
       children: [
         TextField(
           controller: _batchController,
+          textInputAction: TextInputAction.done,
+          maxLines: 1,
           decoration: const InputDecoration(
             labelText: 'Batch нэр (сонголттой)',
             hintText: 'Жишээ: Shift-A 2026-04-21',
             border: OutlineInputBorder(),
-            isDense: true,
+            // Keep default vertical density on small C5 screens; forcing dense
+            // decoration can trigger RenderFlex overflow stripes with some font
+            // scales / OEM text metrics.
           ),
         ),
         const SizedBox(height: 8),

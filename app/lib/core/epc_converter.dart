@@ -2,10 +2,12 @@ class EpcConverterResult {
   const EpcConverterResult({
     required this.value,
     required this.message,
+    this.companyPrefixDigits,
   });
 
   final String value;
   final String message;
+  final int? companyPrefixDigits;
 }
 
 class EpcConverter {
@@ -24,7 +26,8 @@ class EpcConverter {
   ];
 
   static const int _defaultFilter = 1;
-  static int _companyPrefixDigits = 7;
+  /// `0` means "auto detect partition from GTIN-14".
+  static int _companyPrefixDigits = 0;
 
   static const Map<int, int> _digitsToPartition = {
     12: 0,
@@ -39,7 +42,7 @@ class EpcConverter {
   static int get companyPrefixDigits => _companyPrefixDigits;
 
   static void setCompanyPrefixDigits(int digits) {
-    if (_digitsToPartition.containsKey(digits)) {
+    if (digits == 0 || _digitsToPartition.containsKey(digits)) {
       _companyPrefixDigits = digits;
     }
   }
@@ -73,7 +76,13 @@ class EpcConverter {
     final itemReference =
         _bitsToInt(bits.substring(cpEnd, itemEnd)).toString().padLeft(itemDigits, '0');
 
-    final gtin13 = '$companyPrefix$itemReference';
+    // Item reference in SGTIN-96 packs:
+    //   1 digit indicator + N digits item reference.
+    // So GTIN-14 core13 must be: indicator + companyPrefix + itemRefWithoutIndicator.
+    if (itemReference.isEmpty) return null;
+    final indicator = itemReference[0];
+    final itemRefWithoutIndicator = itemReference.substring(1);
+    final gtin13 = '$indicator$companyPrefix$itemRefWithoutIndicator';
     if (gtin13.length != 13) return null;
 
     final check = _computeGs1CheckDigit(gtin13);
@@ -82,6 +91,7 @@ class EpcConverter {
     return EpcConverterResult(
       value: barcode,
       message: 'EPC хувиргав: $cleaned -> $barcode',
+      companyPrefixDigits: cpDigits,
     );
   }
 
@@ -147,15 +157,24 @@ class EpcConverter {
   static EpcConverterResult? encodeSgtin96FromGtin14(
     String gtin14, {
     int? serial,
+    int? companyPrefixDigits,
   }) {
     if (!isValidGtin14(gtin14)) return null;
 
+    final resolvedCpDigits = _resolveCompanyPrefixDigits(
+      gtin14,
+      explicit: companyPrefixDigits,
+    );
+    if (resolvedCpDigits == null) return null;
     final core13 = gtin14.substring(0, 13);
-    final partition = _digitsToPartition[_companyPrefixDigits] ?? 5;
+    final partition = _digitsToPartition[resolvedCpDigits] ?? 5;
     final (cpBits, cpDigits, itemBits, itemDigits) = _partitionTable[partition];
 
-    final companyPrefix = core13.substring(0, cpDigits);
-    final itemReference = core13.substring(cpDigits, cpDigits + itemDigits);
+    final indicator = core13.substring(0, 1);
+    final companyPrefix = core13.substring(1, 1 + cpDigits);
+    final itemRefWithoutIndicator = core13.substring(1 + cpDigits);
+    final itemReference = '$indicator$itemRefWithoutIndicator';
+    if (itemReference.length != itemDigits) return null;
 
     final cpValue = int.parse(companyPrefix);
     final itemValue = int.parse(itemReference);
@@ -183,6 +202,7 @@ class EpcConverter {
     return EpcConverterResult(
       value: epc,
       message: 'Barcode хувиргав: $gtin14 -> $epc (CP:$cpDigits)',
+      companyPrefixDigits: cpDigits,
     );
   }
 
@@ -201,6 +221,35 @@ class EpcConverter {
   static int _bitsToInt(String value) => int.parse(value, radix: 2);
   static String _toBits(int value, int width) =>
       value.toRadixString(2).padLeft(width, '0');
+
+  static int? _resolveCompanyPrefixDigits(
+    String gtin14, {
+    int? explicit,
+  }) {
+    if (explicit != null && _digitsToPartition.containsKey(explicit)) {
+      return explicit;
+    }
+    if (_digitsToPartition.containsKey(_companyPrefixDigits)) {
+      return _companyPrefixDigits;
+    }
+    return _autoDetectCompanyPrefixDigits(gtin14);
+  }
+
+  static int? _autoDetectCompanyPrefixDigits(String gtin14) {
+    for (final cp in const [6, 7, 8, 9, 10, 11, 12]) {
+      final encoded = encodeSgtin96FromGtin14(
+        gtin14,
+        serial: 1,
+        companyPrefixDigits: cp,
+      );
+      if (encoded == null) continue;
+      final decoded = tryConvertToBarcode(encoded.value);
+      if (decoded?.value == gtin14) {
+        return cp;
+      }
+    }
+    return 7;
+  }
 
   static int _computeGs1CheckDigit(String gtinWithoutCheck) {
     var sum = 0;

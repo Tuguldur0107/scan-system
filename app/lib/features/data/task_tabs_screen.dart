@@ -11,7 +11,7 @@ import '../../providers/scan_provider.dart';
 import '../../providers/task_provider.dart';
 import '../../widgets/ui_state_widgets.dart';
 
-/// Three-tab task workspace.
+/// Four-tab task workspace.
 ///
 /// Tab 1 — "Скан + гар оруулах": barcodes captured by camera or typed by hand
 ///         on the mobile device.
@@ -19,10 +19,13 @@ import '../../widgets/ui_state_widgets.dart';
 ///         on web and converted to SGTIN-96 EPCs.
 /// Tab 3 — "EPC → Barcode":      UHF tags read by the C5 hand reader, with
 ///         the EPC decoded back to its underlying GTIN.
+/// Tab 4 — "Хүлээж авах":         supplier packing list (barcode + qty)
+///         reconciled against the C5 EPC reads from tab 3. Matched / pending /
+///         over / orphan items + bulk-remove orphans are all here.
 ///
 /// Each tab filters the scan list by `LocalScan.kind` and renders its own
-/// columns; nothing crosses between tabs even though they all live under
-/// the same task.
+/// columns; tabs 1-3 don't cross over, and tab 4 only *reads* tab 3's data
+/// for matching — nothing in this screen mutates it.
 class TaskTabsScreen extends ConsumerStatefulWidget {
   const TaskTabsScreen({super.key, this.initialSendId, this.initialTab = 0});
 
@@ -42,9 +45,9 @@ class _TaskTabsScreenState extends ConsumerState<TaskTabsScreen>
   void initState() {
     super.initState();
     _tabController = TabController(
-      length: 3,
+      length: 4,
       vsync: this,
-      initialIndex: widget.initialTab.clamp(0, 2),
+      initialIndex: widget.initialTab.clamp(0, 3),
     );
     _refreshFromServer();
   }
@@ -79,6 +82,9 @@ class _TaskTabsScreenState extends ConsumerState<TaskTabsScreen>
         scans.where((s) => s.kind == ScanKind.epcImport).toList(growable: false);
     final epcReadRows =
         scans.where((s) => s.kind == ScanKind.epcRead).toList(growable: false);
+    final packingListRows = scans
+        .where((s) => s.kind == ScanKind.packingList)
+        .toList(growable: false);
 
     return Scaffold(
       appBar: AppBar(
@@ -120,6 +126,10 @@ class _TaskTabsScreenState extends ConsumerState<TaskTabsScreen>
               icon: const Icon(Icons.nfc),
               text: 'EPC → Barcode (${epcReadRows.length})',
             ),
+            Tab(
+              icon: const Icon(Icons.inventory_2),
+              text: 'Хүлээж авах (${packingListRows.length})',
+            ),
           ],
         ),
       ),
@@ -135,6 +145,11 @@ class _TaskTabsScreenState extends ConsumerState<TaskTabsScreen>
                 _BarcodeScanTab(rows: scanRows),
                 _EpcImportTab(rows: epcImportRows),
                 _EpcReadTab(rows: epcReadRows),
+                _ReceivingTab(
+                  packingRows: packingListRows,
+                  epcReadRows: epcReadRows,
+                  taskId: selectedTask.id,
+                ),
               ],
             ),
     );
@@ -401,7 +416,7 @@ class _EpcReadTab extends ConsumerWidget {
                   '${index + 1}',
                   scan.sendId ?? '-',
                   scan.barcodeValue,
-                  decoded ?? '-',
+                  decoded,
                   scan.barcodeFormat ?? 'EPC',
                   _formatDate(scan.scannedAt),
                   scan.username ?? '-',
@@ -411,6 +426,691 @@ class _EpcReadTab extends ConsumerWidget {
             ),
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Tab 4 — Receiving (Хүлээж авах)
+// ---------------------------------------------------------------------------
+
+/// Status of a packing-list row after reconciliation against `epc_read` reads.
+enum _MatchStatus {
+  /// `received >= expected` and `received == expected`.
+  matched,
+
+  /// `received < expected` — operator hasn't passed the C5 over enough tags
+  /// yet. Expected qty stays in the running total.
+  pending,
+
+  /// `received > expected` — supplier shipped too many of this barcode, or
+  /// the operator scanned items that aren't from this shipment but happen
+  /// to be the same SKU.
+  over,
+}
+
+class _PackingMatchRow {
+  _PackingMatchRow({
+    required this.expected,
+    required this.received,
+    required this.itemCode,
+    required this.name,
+    required this.carton,
+    required this.matchedReadIds,
+  });
+
+  final LocalScan expected;
+  final int received;
+  final String? itemCode;
+  final String? name;
+  final String? carton;
+
+  /// Local-scan IDs of the EPC reads that decoded to this barcode. Used to
+  /// drill-down into the actual EPCs behind a packing-list row.
+  final List<String> matchedReadIds;
+
+  int get expectedQty {
+    final meta = expected.notes ?? '';
+    final m = RegExp(r'qty:\s*(\d+)').firstMatch(meta);
+    if (m != null) return int.tryParse(m.group(1)!) ?? 1;
+    return 1;
+  }
+
+  _MatchStatus get status {
+    if (received == 0) return _MatchStatus.pending;
+    if (received < expectedQty) return _MatchStatus.pending;
+    if (received > expectedQty) return _MatchStatus.over;
+    return _MatchStatus.matched;
+  }
+}
+
+class _ReceivingTab extends ConsumerStatefulWidget {
+  const _ReceivingTab({
+    required this.packingRows,
+    required this.epcReadRows,
+    required this.taskId,
+  });
+
+  final List<LocalScan> packingRows;
+  final List<LocalScan> epcReadRows;
+  final String taskId;
+
+  @override
+  ConsumerState<_ReceivingTab> createState() => _ReceivingTabState();
+}
+
+class _ReceivingTabState extends ConsumerState<_ReceivingTab> {
+  bool _busy = false;
+
+  @override
+  Widget build(BuildContext context) {
+    // Step 1: bucket every epc_read by its decoded GTIN-14 (or the legacy
+    // already-decoded barcode value). Reads we can't decode get bucketed
+    // under "__undecoded__" so they show up as orphans rather than silently
+    // matching nothing.
+    final readsByBarcode = <String, List<LocalScan>>{};
+    for (final s in widget.epcReadRows) {
+      final decoded = _normalizeForMatch(_decodeBarcodeFromScan(s));
+      final key = decoded ?? '__undecoded__';
+      readsByBarcode.putIfAbsent(key, () => []).add(s);
+    }
+
+    // Step 2: walk the packing list and pair each row with the reads we've
+    // bucketed for its barcode.
+    final matchRows = <_PackingMatchRow>[];
+    final matchedKeys = <String>{};
+    for (final p in widget.packingRows) {
+      final key = _normalizeForMatch(p.barcodeValue);
+      final reads = key == null ? const <LocalScan>[] : (readsByBarcode[key] ?? const []);
+      if (key != null) matchedKeys.add(key);
+      final parsed = _parsePackingNotes(p.notes);
+      matchRows.add(_PackingMatchRow(
+        expected: p,
+        received: reads.length,
+        itemCode: parsed.itemCode,
+        name: parsed.name,
+        carton: parsed.carton,
+        matchedReadIds: reads.map((e) => e.id).toList(),
+      ));
+    }
+
+    // Step 3: anything in `readsByBarcode` whose key didn't pair with a
+    // packing-list row is an orphan. Reads we couldn't decode at all are
+    // also orphans (the operator's options are: re-scan, drop, or fix the
+    // EPC encoding).
+    final orphanReads = <LocalScan>[];
+    for (final entry in readsByBarcode.entries) {
+      if (!matchedKeys.contains(entry.key)) {
+        orphanReads.addAll(entry.value);
+      }
+    }
+
+    final totalExpected =
+        matchRows.fold<int>(0, (a, r) => a + r.expectedQty);
+    final totalMatched = matchRows.fold<int>(
+      0,
+      (a, r) =>
+          a + (r.received > r.expectedQty ? r.expectedQty : r.received),
+    );
+    final totalPending = totalExpected - totalMatched;
+    final totalOver = matchRows.fold<int>(
+      0,
+      (a, r) => a + (r.received > r.expectedQty ? r.received - r.expectedQty : 0),
+    );
+    final totalOrphan = orphanReads.length;
+
+    return _TabScaffold(
+      header: _TabHeader(
+        title: 'Хүлээж авах (Receiving)',
+        subtitle:
+            'Ханган нийлүүлэгчээс ирсэн packing list-ийг C5-аар уншсан '
+            'EPC-үүдтэй тулгана. Ижил EPC-ийг дахин уншвал давхардуулахгүй, '
+            'packing list дээр байхгүй уншигдсан зүйлсийг "орхигдсон" '
+            'гэж үзээд бөөнөөр устгах боломжтой.',
+        primaryAction: kIsWeb
+            ? _PrimaryAction(
+                icon: Icons.upload_file,
+                label: 'Packing list оруулах',
+                onPressed: () => context.go('/import/packing-list'),
+              )
+            : null,
+        secondaryAction: kIsWeb
+            ? null
+            : const _SecondaryAction(
+                icon: Icons.upload_file,
+                label: 'Packing list оруулах',
+                onPressed: null,
+                disabledReason: 'Зөвхөн web-ээс файл оруулна',
+              ),
+      ),
+      empty: widget.packingRows.isEmpty && widget.epcReadRows.isEmpty
+          ? const AppEmptyView(
+              icon: Icons.inventory_2_outlined,
+              title: 'Packing list болон уншилт алга',
+              message:
+                  'Ханган нийлүүлэгчийн packing list-ийг web-ээс оруулсаны дараа '
+                  'C5 уншигчаар тэмдгүүдийг уншиж тулгана.',
+            )
+          : null,
+      table: widget.packingRows.isEmpty && widget.epcReadRows.isEmpty
+          ? null
+          : _ReceivingBody(
+              matchRows: matchRows,
+              orphanReads: orphanReads,
+              totalExpected: totalExpected,
+              totalMatched: totalMatched,
+              totalPending: totalPending,
+              totalOver: totalOver,
+              totalOrphan: totalOrphan,
+              busy: _busy,
+              onClearPacking: widget.packingRows.isEmpty
+                  ? null
+                  : _confirmClearPacking,
+              onRemoveOrphans: orphanReads.isEmpty ? null : _confirmRemoveOrphans,
+            ),
+    );
+  }
+
+  Future<void> _confirmClearPacking() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Packing list-г бүхэлд нь устгах уу?'),
+        content: const Text(
+          'Энэ task-ийн бүх packing list мөрүүд устах болно. '
+          'C5-аар уншсан EPC-үүд хэвээр үлдэнэ.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Устгах'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _busy = true);
+    try {
+      final n = await ref.read(scanProvider.notifier).bulkDeleteByKind(
+            taskId: widget.taskId,
+            kind: ScanKind.packingList,
+          );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$n packing list мөр устгалаа')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Устгах алдаа: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _confirmRemoveOrphans() async {
+    final orphanCount = widget.epcReadRows
+        .where((s) {
+          final decoded = _normalizeForMatch(_decodeBarcodeFromScan(s));
+          if (decoded == null) return true;
+          return widget.packingRows.every(
+            (p) => _normalizeForMatch(p.barcodeValue) != decoded,
+          );
+        })
+        .length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Орхигдсон уншилтуудыг устгах уу?'),
+        content: Text(
+          'Packing list дээр байхгүй $orphanCount EPC уншилт устах болно. '
+          'Packing list мөрүүдтэй таарсан уншилтууд хэвээр үлдэнэ.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Устгах'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final orphanValues = <String>[];
+    for (final s in widget.epcReadRows) {
+      final decoded = _normalizeForMatch(_decodeBarcodeFromScan(s));
+      if (decoded == null) {
+        orphanValues.add(s.barcodeValue);
+      } else if (widget.packingRows.every(
+        (p) => _normalizeForMatch(p.barcodeValue) != decoded,
+      )) {
+        orphanValues.add(s.barcodeValue);
+      }
+    }
+    if (orphanValues.isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      final n = await ref.read(scanProvider.notifier).bulkDeleteValues(
+            taskId: widget.taskId,
+            kind: ScanKind.epcRead,
+            values: orphanValues,
+          );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$n орхигдсон уншилт устгалаа')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Устгах алдаа: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+}
+
+class _ReceivingBody extends StatelessWidget {
+  const _ReceivingBody({
+    required this.matchRows,
+    required this.orphanReads,
+    required this.totalExpected,
+    required this.totalMatched,
+    required this.totalPending,
+    required this.totalOver,
+    required this.totalOrphan,
+    required this.busy,
+    required this.onClearPacking,
+    required this.onRemoveOrphans,
+  });
+
+  final List<_PackingMatchRow> matchRows;
+  final List<LocalScan> orphanReads;
+  final int totalExpected;
+  final int totalMatched;
+  final int totalPending;
+  final int totalOver;
+  final int totalOrphan;
+  final bool busy;
+  final VoidCallback? onClearPacking;
+  final VoidCallback? onRemoveOrphans;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SummaryCards(
+          totalExpected: totalExpected,
+          totalMatched: totalMatched,
+          totalPending: totalPending,
+          totalOver: totalOver,
+          totalOrphan: totalOrphan,
+        ),
+        const SizedBox(height: 12),
+        _PackingMatchTable(rows: matchRows, busy: busy, onClear: onClearPacking),
+        if (orphanReads.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          _OrphanReadsCard(
+            orphans: orphanReads,
+            busy: busy,
+            onRemoveAll: onRemoveOrphans,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _SummaryCards extends StatelessWidget {
+  const _SummaryCards({
+    required this.totalExpected,
+    required this.totalMatched,
+    required this.totalPending,
+    required this.totalOver,
+    required this.totalOrphan,
+  });
+
+  final int totalExpected;
+  final int totalMatched;
+  final int totalPending;
+  final int totalOver;
+  final int totalOrphan;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 12,
+      runSpacing: 12,
+      children: [
+        _StatCard(
+          label: 'Хүлээгдэж буй',
+          value: totalExpected,
+          color: const Color(0xFF455A64),
+        ),
+        _StatCard(
+          label: 'Тулгасан',
+          value: totalMatched,
+          color: const Color(0xFF0F8B68),
+        ),
+        _StatCard(
+          label: 'Дутуу',
+          value: totalPending,
+          color: const Color(0xFFB58E00),
+        ),
+        _StatCard(
+          label: 'Илүү',
+          value: totalOver,
+          color: const Color(0xFFB84C4C),
+        ),
+        _StatCard(
+          label: 'Орхигдсон',
+          value: totalOrphan,
+          color: const Color(0xFFB84C4C),
+        ),
+      ],
+    );
+  }
+}
+
+class _StatCard extends StatelessWidget {
+  const _StatCard({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final String label;
+  final int value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 160,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        color: color.withAlpha(20),
+        border: Border.all(color: color.withAlpha(60)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontWeight: FontWeight.w600,
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '$value',
+            style: TextStyle(
+              color: color,
+              fontWeight: FontWeight.w800,
+              fontSize: 26,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PackingMatchTable extends StatelessWidget {
+  const _PackingMatchTable({
+    required this.rows,
+    required this.busy,
+    required this.onClear,
+  });
+
+  final List<_PackingMatchRow> rows;
+  final bool busy;
+  final VoidCallback? onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface.withAlpha(240),
+        borderRadius: BorderRadius.circular(24),
+        border:
+            Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Packing list — ${rows.length} мөр',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                if (onClear != null)
+                  TextButton.icon(
+                    onPressed: busy ? null : onClear,
+                    icon: const Icon(Icons.delete_sweep),
+                    label: const Text('Packing list устгах'),
+                  ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          if (rows.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(
+                'Packing list оруулаагүй байна. Web-ээс Excel/CSV оруулна уу.',
+              ),
+            )
+          else
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: DataTable(
+                columns: const [
+                  DataColumn(label: Text('#')),
+                  DataColumn(label: Text('Barcode')),
+                  DataColumn(label: Text('Item code')),
+                  DataColumn(label: Text('Name')),
+                  DataColumn(label: Text('Carton')),
+                  DataColumn(label: Text('Хүлээгдэж')),
+                  DataColumn(label: Text('Уншсан')),
+                  DataColumn(label: Text('Зөрөө')),
+                  DataColumn(label: Text('Төлөв')),
+                ],
+                rows: [
+                  for (var i = 0; i < rows.length; i++)
+                    DataRow(
+                      color: WidgetStateProperty.resolveWith((_) {
+                        switch (rows[i].status) {
+                          case _MatchStatus.matched:
+                            return Colors.green.withValues(alpha: 0.06);
+                          case _MatchStatus.pending:
+                            return Colors.orange.withValues(alpha: 0.06);
+                          case _MatchStatus.over:
+                            return Colors.red.withValues(alpha: 0.06);
+                        }
+                      }),
+                      cells: [
+                        DataCell(Text('${i + 1}')),
+                        DataCell(SelectableText(
+                          rows[i].expected.barcodeValue,
+                          style: const TextStyle(fontFamily: 'monospace'),
+                        )),
+                        DataCell(Text(rows[i].itemCode ?? '-')),
+                        DataCell(Text(rows[i].name ?? '-')),
+                        DataCell(Text(rows[i].carton ?? '-')),
+                        DataCell(Text('${rows[i].expectedQty}')),
+                        DataCell(Text('${rows[i].received}')),
+                        DataCell(Text(
+                          '${rows[i].received - rows[i].expectedQty}',
+                        )),
+                        DataCell(_StatusChip(status: rows[i].status)),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusChip extends StatelessWidget {
+  const _StatusChip({required this.status});
+
+  final _MatchStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final (color, label) = switch (status) {
+      _MatchStatus.matched => (const Color(0xFF0F8B68), 'Тулгасан'),
+      _MatchStatus.pending => (const Color(0xFFB58E00), 'Дутуу'),
+      _MatchStatus.over => (const Color(0xFFB84C4C), 'Илүү'),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withAlpha(28),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w700,
+          fontSize: 12,
+        ),
+      ),
+    );
+  }
+}
+
+class _OrphanReadsCard extends StatelessWidget {
+  const _OrphanReadsCard({
+    required this.orphans,
+    required this.busy,
+    required this.onRemoveAll,
+  });
+
+  final List<LocalScan> orphans;
+  final bool busy;
+  final VoidCallback? onRemoveAll;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface.withAlpha(240),
+        borderRadius: BorderRadius.circular(24),
+        border:
+            Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Орхигдсон уншилтууд — ${orphans.length} мөр',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: busy ? null : onRemoveAll,
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Бүгдийг устгах'),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DataTable(
+              columns: const [
+                DataColumn(label: Text('#')),
+                DataColumn(label: Text('EPC')),
+                DataColumn(label: Text('Decoded barcode')),
+                DataColumn(label: Text('Огноо')),
+                DataColumn(label: Text('Хэрэглэгч')),
+              ],
+              rows: [
+                for (var i = 0; i < orphans.length; i++)
+                  DataRow(cells: [
+                    DataCell(Text('${i + 1}')),
+                    DataCell(SelectableText(
+                      orphans[i].barcodeValue,
+                      style: const TextStyle(fontFamily: 'monospace'),
+                    )),
+                    DataCell(Text(_decodeBarcodeFromScan(orphans[i]))),
+                    DataCell(Text(_formatDate(orphans[i].scannedAt))),
+                    DataCell(Text(orphans[i].username ?? '-')),
+                  ]),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ParsedPackingNotes {
+  const _ParsedPackingNotes({this.itemCode, this.name, this.carton});
+  final String? itemCode;
+  final String? name;
+  final String? carton;
+}
+
+/// Parses the structured `notes` written by `WebPackingListImportScreen`:
+/// `qty: 6 | item: 701236091-009-M | name: Levi 501 | carton: BX-12`.
+_ParsedPackingNotes _parsePackingNotes(String? notes) {
+  if (notes == null) return const _ParsedPackingNotes();
+  String? itemCode;
+  String? name;
+  String? carton;
+  for (final part in notes.split('|')) {
+    final p = part.trim();
+    if (p.startsWith('item:')) {
+      itemCode = p.substring('item:'.length).trim();
+    } else if (p.startsWith('name:')) {
+      name = p.substring('name:'.length).trim();
+    } else if (p.startsWith('carton:')) {
+      carton = p.substring('carton:'.length).trim();
+    }
+  }
+  return _ParsedPackingNotes(itemCode: itemCode, name: name, carton: carton);
+}
+
+/// Normalizes a raw barcode (12-14 digits) or already-decoded GTIN-14 to a
+/// common 14-digit form so packing-list rows and EPC-decoded reads collide
+/// on the same key. Returns null if the value isn't a recognizable GTIN
+/// (e.g. an undecoded EPC error message).
+String? _normalizeForMatch(String? raw) {
+  if (raw == null) return null;
+  final r = raw.trim();
+  if (r.isEmpty) return null;
+  return EpcConverter.normalizeToGtin14(r);
 }
 
 // ---------------------------------------------------------------------------
@@ -707,14 +1407,36 @@ _ParsedEpcImportNotes _parseEpcImportNotes(String? notes) {
   );
 }
 
-String? _decodeBarcodeFromScan(LocalScan scan) {
-  // C5 reads with auto-convert ON already store the decoded GTIN as the
-  // barcode_value; in that case the value is already a barcode (not an EPC).
-  if ((scan.barcodeFormat ?? '').toUpperCase() == 'EPC->BARCODE') {
+String _decodeBarcodeFromScan(LocalScan scan) {
+  // Legacy rows: older builds saved barcode directly when auto-convert was ON.
+  // Keep showing that value as decoded barcode for backward compatibility.
+  final format = (scan.barcodeFormat ?? '').toUpperCase();
+  final raw = scan.barcodeValue.trim().toUpperCase();
+  if (format == 'EPC->BARCODE' && RegExp(r'^\d{8,14}$').hasMatch(raw)) {
     return scan.barcodeValue;
   }
-  final res = EpcConverter.tryConvertToBarcode(scan.barcodeValue);
-  return res?.value;
+
+  final cleaned = raw.replaceAll(RegExp(r'[^0-9A-F]'), '');
+
+  // 1) Normal direct decode path.
+  final direct = EpcConverter.tryConvertToBarcode(cleaned);
+  if (direct != null) return direct.value;
+
+  // 2) Some readers prepend 16-bit PC (4 hex chars): [PC][EPC(24)].
+  if (cleaned.length >= 28) {
+    final tail24 = cleaned.substring(cleaned.length - 24);
+    final tail = EpcConverter.tryConvertToBarcode(tail24);
+    if (tail != null) return '${tail.value} (PC stripped)';
+  }
+
+  // 3) Explain why decode failed.
+  if (cleaned.length < 24) return 'Хэт богино EPC (${cleaned.length} hex)';
+  final candidate = cleaned.length >= 24 ? cleaned.substring(0, 24) : cleaned;
+  final firstByteHex = candidate.substring(0, 2);
+  if (firstByteHex != '30') {
+    return 'SGTIN-96 биш (header=$firstByteHex)';
+  }
+  return 'GTIN decode амжилтгүй';
 }
 
 String _formatDate(DateTime dt) =>

@@ -50,9 +50,13 @@ android {
 }
 
 dependencies {
-    // Chainway UHF DeviceAPI AAR (see app/libs/DeviceAPI_ver20250209_release.aar).
-    // The flatDir repo is registered in the root build.gradle.kts.
-    implementation(group = "", name = "DeviceAPI_ver20250209_release", ext = "aar")
+    // Chainway UHF DeviceAPI AAR — keep the file under `android/app/libs/`.
+    //
+    // Do NOT use `implementation(group = "", name = "...", ext = "aar")` with an
+    // empty `group`: Android Lint 8.x GradleDetector can crash while parsing it
+    // (`Illegal char <"> at index 8: group = ""\\\\DeviceAPI_...`), which fails
+    // `:app:lintVitalAnalyzeRelease` on release builds.
+    implementation(files("libs/DeviceAPI_ver20250209_release.aar"))
 }
 
 flutter {

@@ -2,11 +2,6 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        // Chainway UHF AAR lives under app/libs/ and is consumed as a named
-        // dependency (see app/build.gradle.kts).
-        flatDir {
-            dirs("${rootDir}/app/libs")
-        }
     }
 }
 

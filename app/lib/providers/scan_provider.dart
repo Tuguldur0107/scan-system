@@ -70,7 +70,15 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
     return true;
   }
 
-  void addScan({
+  /// Adds a scan locally. Returns `true` if the scan was actually added,
+  /// `false` if it was deduped because an identical row already exists.
+  ///
+  /// Kinds [ScanKind.epcRead] and [ScanKind.packingList] are deduped per
+  /// task by case-insensitive `barcodeValue` so the C5 reader can pass over
+  /// the same tag twice and the receiving Excel can be re-imported without
+  /// creating duplicate rows. The server enforces the same rule at the DB
+  /// level via the partial UNIQUE indexes from migration 007.
+  bool addScan({
     required String taskId,
     required String taskName,
     required String barcodeValue,
@@ -79,20 +87,37 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
     String? batchName,
     String? sourceFile,
     String? kind,
+    String? notes,
   }) {
+    final normalizedKind = ScanKind.normalize(kind);
+    final isDeduped = normalizedKind == ScanKind.epcRead ||
+        normalizedKind == ScanKind.packingList;
+
+    if (isDeduped) {
+      final upper = barcodeValue.toUpperCase();
+      final exists = state.any(
+        (s) =>
+            s.projectId == taskId &&
+            s.kind == normalizedKind &&
+            s.barcodeValue.toUpperCase() == upper,
+      );
+      if (exists) return false;
+    }
+
     final scan = LocalScan(
       id: _uuid.v4(),
       projectId: taskId,
       barcodeValue: barcodeValue,
       barcodeFormat: barcodeFormat,
       scannedAt: DateTime.now(),
-      notes: taskName,
+      notes: notes ?? taskName,
       username: username,
       batchName: batchName,
       sourceFile: sourceFile,
-      kind: kind,
+      kind: normalizedKind,
     );
     state = [scan, ...state];
+    return true;
   }
 
   void updateBarcode(String id, String newValue) {
@@ -104,6 +129,55 @@ class ScanNotifier extends StateNotifier<List<LocalScan>> {
 
   void removeScan(String id) {
     state = state.where((s) => s.id != id).toList();
+  }
+
+  /// Deletes every scan of [kind] in [taskId] from both server and local
+  /// state. Used by "Clear packing list" / "Clear all EPC reads" buttons in
+  /// the receiving tab.
+  ///
+  /// Only `epc_read` and `packing_list` kinds are accepted (the server
+  /// rejects everything else with 400).
+  Future<int> bulkDeleteByKind({
+    required String taskId,
+    required String kind,
+  }) async {
+    final normalized = ScanKind.normalize(kind);
+    if (normalized != ScanKind.epcRead &&
+        normalized != ScanKind.packingList) {
+      throw ArgumentError('bulkDeleteByKind only supports epc_read / packing_list');
+    }
+    final deleted = await _api.bulkDelete(projectId: taskId, kind: normalized);
+    state = state
+        .where((s) => !(s.projectId == taskId && s.kind == normalized))
+        .toList();
+    return deleted;
+  }
+
+  /// Deletes a specific subset of `kind` rows in [taskId] (matched by
+  /// case-insensitive barcode value). Used by "Remove orphans" in the
+  /// receiving summary view to drop EPCs that don't appear on the packing
+  /// list.
+  Future<int> bulkDeleteValues({
+    required String taskId,
+    required String kind,
+    required List<String> values,
+  }) async {
+    if (values.isEmpty) return 0;
+    final normalized = ScanKind.normalize(kind);
+    final deleted = await _api.bulkDelete(
+      projectId: taskId,
+      kind: normalized,
+      values: values,
+    );
+    final upperSet = values.map((v) => v.toUpperCase()).toSet();
+    state = state
+        .where(
+          (s) => !(s.projectId == taskId &&
+              s.kind == normalized &&
+              upperSet.contains(s.barcodeValue.toUpperCase())),
+        )
+        .toList();
+    return deleted;
   }
 
   List<LocalScan> get pending => state.where((s) => !s.synced).toList();

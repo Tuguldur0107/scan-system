@@ -164,8 +164,13 @@ class _WebBarcodeEpcImportScreenState
             DropdownButtonFormField<int>(
               initialValue: _cpDigits,
               decoration: const InputDecoration(border: OutlineInputBorder()),
-              items: const [6, 7, 8, 9, 10, 11, 12]
-                  .map((d) => DropdownMenuItem(value: d, child: Text('$d')))
+              items: const [0, 6, 7, 8, 9, 10, 11, 12]
+                  .map(
+                    (d) => DropdownMenuItem(
+                      value: d,
+                      child: Text(d == 0 ? 'Auto' : '$d'),
+                    ),
+                  )
                   .toList(),
               onChanged: (v) {
                 if (v == null) return;
@@ -253,7 +258,7 @@ class _WebBarcodeEpcImportScreenState
             DataColumn(label: Text('GTIN-14')),
             DataColumn(label: Text('Өмнө хадгалсан')),
             DataColumn(label: Text('Серийн муж')),
-            DataColumn(label: Text('Sample EPC')),
+            DataColumn(label: Text('EPC preview')),
             DataColumn(label: Text('Тайлбар')),
           ],
           rows: [
@@ -272,7 +277,7 @@ class _WebBarcodeEpcImportScreenState
                   DataCell(Text(_predictedRange(r))),
                   DataCell(
                     SelectableText(
-                      r.sampleEpc ?? '-',
+                      _previewEpcs(r),
                       style: const TextStyle(fontFamily: 'monospace'),
                     ),
                   ),
@@ -310,6 +315,41 @@ class _WebBarcodeEpcImportScreenState
       cursor[row.gtin14!] = end;
     }
     return '-';
+  }
+
+  /// Shows concrete EPC examples that would be generated for this row.
+  /// We display up to 3 EPCs (for readability) and append `...` when qty > 3.
+  String _previewEpcs(_ParsedRow r) {
+    if (!r.ok || r.gtin14 == null) return '-';
+    final cursor = <String, int>{};
+    for (final row in _rows.where((e) => e.ok)) {
+      final base = (_existingCounts[row.gtin14] ?? 0);
+      cursor.putIfAbsent(row.gtin14!, () => base + 1);
+    }
+    int? rowStart;
+    for (final row in _rows.where((e) => e.ok)) {
+      final start = cursor[row.gtin14!]!;
+      if (identical(row, r)) {
+        rowStart = start;
+        break;
+      }
+      cursor[row.gtin14!] = start + row.qty;
+    }
+    if (rowStart == null) return r.sampleEpc ?? '-';
+
+    final previewCount = r.qty < 3 ? r.qty : 3;
+    final out = <String>[];
+    for (var i = 0; i < previewCount; i++) {
+      final serial = rowStart + i;
+      final epc = EpcConverter.encodeSgtin96FromGtin14(
+        r.gtin14!,
+        serial: serial,
+      );
+      if (epc != null) out.add(epc.value);
+    }
+    if (out.isEmpty) return '-';
+    if (r.qty > previewCount) out.add('...');
+    return out.join('\n');
   }
 
   Future<void> _pickFile() async {
@@ -706,7 +746,8 @@ class _WebBarcodeEpcImportScreenState
               'row_index': row.rowIndex,
               'source_cell': row.rawBarcode,
               'gtin14': gtin,
-              'company_prefix_digits': EpcConverter.companyPrefixDigits,
+              'company_prefix_digits':
+                  epcRes.companyPrefixDigits ?? EpcConverter.companyPrefixDigits,
               'serial': serial,
               'tenant_cumulative_total': totalByGtin[gtin],
             },

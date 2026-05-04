@@ -1,5 +1,6 @@
-/// Mirrors the `scans.kind` enum on the server (migration `006_scans_kind`).
-/// The Task UI uses these to split scans into 3 tabs.
+/// Mirrors the `scans.kind` enum on the server (migrations `006_scans_kind`
+/// + `007_receiving_packing_list`). The Task UI uses these to split scans
+/// across the per-task tabs.
 class ScanKind {
   /// Mobile camera scan or manual barcode entry (default for legacy rows).
   static const String barcodeScan = 'barcode_scan';
@@ -11,9 +12,19 @@ class ScanKind {
   /// EPC dump files).
   static const String epcRead = 'epc_read';
 
+  /// "Expected" rows imported from a supplier's packing list (barcode + qty,
+  /// optionally item code / name / carton). The receiving tab matches these
+  /// against [epcRead] reads to figure out matched / pending / orphan items.
+  static const String packingList = 'packing_list';
+
   /// All values the server accepts. Anything else is normalized to
   /// [barcodeScan] both here and in `ScanRepository._normalizeKind`.
-  static const Set<String> all = {barcodeScan, epcImport, epcRead};
+  static const Set<String> all = {
+    barcodeScan,
+    epcImport,
+    epcRead,
+    packingList,
+  };
 
   static String normalize(String? raw) {
     if (raw == null) return barcodeScan;

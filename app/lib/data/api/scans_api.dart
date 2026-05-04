@@ -36,4 +36,27 @@ class ScansApi {
   Future<void> delete(String id) async {
     await _dio.delete('/scans/$id');
   }
+
+  /// Bulk delete by `kind`. If [values] is empty/null, every row of that
+  /// kind in the project is removed (used for "Clear packing list").
+  /// Otherwise only the specified barcode values are removed (used for
+  /// "Remove orphan EPC reads").
+  ///
+  /// Server enforces an allow-list: only `epc_read` and `packing_list` rows
+  /// may be deleted via this endpoint.
+  Future<int> bulkDelete({
+    required String projectId,
+    required String kind,
+    List<String>? values,
+  }) async {
+    final response = await _dio.post(
+      '/scans/bulk-delete',
+      data: {
+        'project_id': projectId,
+        'kind': kind,
+        if (values != null) 'values': values,
+      },
+    );
+    return (response.data as Map<String, dynamic>)['deleted'] as int? ?? 0;
+  }
 }

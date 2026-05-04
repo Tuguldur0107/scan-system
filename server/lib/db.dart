@@ -49,6 +49,7 @@ class Database {
       '004_project_is_open': _migration004,
       '005_epc_counters': _migration005,
       '006_scans_kind': _migration006,
+      '007_receiving_packing_list': _migration007,
     };
 
     for (final entry in migrations.entries) {
@@ -232,4 +233,36 @@ ADD CONSTRAINT scans_kind_check
 CHECK (kind IN ('barcode_scan', 'epc_import', 'epc_read'));
 
 CREATE INDEX IF NOT EXISTS idx_scans_kind ON scans(tenant_id, project_id, kind);
+''';
+
+/// Receiving (Хүлээж авах) feature.
+///
+/// Adds a 4th `kind` value `packing_list` for imported "expected" rows
+/// (carton + barcode + qty) coming from a supplier (Levi's, Crocs, etc.).
+/// Two partial unique indexes also enforce the dedup behaviour the operator
+/// asked for:
+///
+/// - `epc_read` rows are unique per (tenant, project, normalized EPC). When
+///   the C5 reader passes over the same physical tag a second time the new
+///   insert is silently rejected so we never count the same item twice.
+/// - `packing_list` rows are unique per (tenant, project, normalized barcode).
+///   Re-importing the same packing list either no-ops or — if `qty` changes —
+///   the upload screen will clear and re-import. Both keep the table clean.
+///
+/// Indexes use `UPPER(barcode_value)` so hex EPCs match regardless of case.
+const _migration007 = '''
+ALTER TABLE scans
+DROP CONSTRAINT IF EXISTS scans_kind_check;
+
+ALTER TABLE scans
+ADD CONSTRAINT scans_kind_check
+CHECK (kind IN ('barcode_scan', 'epc_import', 'epc_read', 'packing_list'));
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scans_unique_epc_read
+ON scans(tenant_id, project_id, UPPER(barcode_value))
+WHERE kind = 'epc_read';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scans_unique_packing_list
+ON scans(tenant_id, project_id, UPPER(barcode_value))
+WHERE kind = 'packing_list';
 ''';

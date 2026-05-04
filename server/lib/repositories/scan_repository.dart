@@ -6,11 +6,21 @@ import 'base_repository.dart';
 
 class ScanRepository extends BaseRepository {
   /// Allowed values for `scans.kind` (matches the DB CHECK constraint added
-  /// in migration `006_scans_kind`).
+  /// in migrations `006_scans_kind` / `007_receiving_packing_list`).
   static const Set<String> kindValues = {
     'barcode_scan',
     'epc_import',
     'epc_read',
+    'packing_list',
+  };
+
+  /// Kinds that have a partial UNIQUE index on
+  /// `(tenant_id, project_id, UPPER(barcode_value))`. The `create` method
+  /// uses `ON CONFLICT DO NOTHING` for these so the C5 reader / Excel
+  /// import can pass the same row twice without erroring out.
+  static const Set<String> _dedupedKinds = {
+    'epc_read',
+    'packing_list',
   };
 
   /// Falls back to `barcode_scan` for any unknown / null `kind` so we never
@@ -22,6 +32,14 @@ class ScanRepository extends BaseRepository {
     return kindValues.contains(v) ? v : 'barcode_scan';
   }
 
+  /// Creates a scan row.
+  ///
+  /// For `epc_read` and `packing_list` kinds we catch the unique-violation
+  /// (`SQLSTATE 23505`) raised by the partial UNIQUE indexes added in
+  /// migration `007_receiving_packing_list` and return the existing row
+  /// flagged as `duplicate: true`. This is what gives the operator the
+  /// "if already read, don't add again" behaviour they asked for, both for
+  /// the C5 RFID reader and for re-imports of the same packing list.
   Future<Map<String, dynamic>> create({
     required String tenantId,
     required String projectId,
@@ -33,26 +51,120 @@ class ScanRepository extends BaseRepository {
     Map<String, dynamic> metadata = const {},
     String? kind,
   }) async {
+    final normalizedKind = _normalizeKind(kind);
+    final useUpsert = _dedupedKinds.contains(normalizedKind);
+
+    final params = <String, dynamic>{
+      'tenant_id': tenantId,
+      'project_id': projectId,
+      'user_id': userId,
+      'barcode_value': barcodeValue,
+      'barcode_format': barcodeFormat,
+      'scanned_at': scannedAt,
+      'notes': notes,
+      // jsonb expects valid JSON; Map.toString() is not JSON.
+      'metadata': jsonEncode(metadata),
+      'kind': normalizedKind,
+    };
+
+    try {
+      final result = await db.execute(
+        Sql.named(
+          '''INSERT INTO scans (tenant_id, project_id, user_id, barcode_value, barcode_format, scanned_at, notes, metadata, kind)
+             VALUES (@tenant_id, @project_id, @user_id, @barcode_value, @barcode_format, @scanned_at, @notes, @metadata::jsonb, @kind)
+             RETURNING *''',
+        ),
+        parameters: params,
+      );
+      return _rowToMap(result.first);
+    } on UniqueViolationException {
+      // Only swallow this for kinds we actively dedup — every other
+      // unique-violation should bubble up so it can be diagnosed instead of
+      // silently disappearing.
+      if (!useUpsert) rethrow;
+
+      final existing = await db.execute(
+        Sql.named(
+          '''SELECT * FROM scans
+             WHERE tenant_id = @tenant_id
+               AND project_id = @project_id
+               AND UPPER(barcode_value) = UPPER(@barcode_value)
+               AND kind = @kind
+             LIMIT 1''',
+        ),
+        parameters: {
+          'tenant_id': tenantId,
+          'project_id': projectId,
+          'barcode_value': barcodeValue,
+          'kind': normalizedKind,
+        },
+      );
+
+      if (existing.isNotEmpty) {
+        final m = _rowToMap(existing.first);
+        m['duplicate'] = true;
+        return m;
+      }
+      rethrow;
+    }
+  }
+
+  /// Deletes every scan of a given kind in a project. Used by the
+  /// "Clear packing list" / "Clear EPC reads" actions in the receiving tab.
+  Future<int> deleteByKind({
+    required String tenantId,
+    required String projectId,
+    required String kind,
+  }) async {
+    final normalized = _normalizeKind(kind);
     final result = await db.execute(
       Sql.named(
-        '''INSERT INTO scans (tenant_id, project_id, user_id, barcode_value, barcode_format, scanned_at, notes, metadata, kind)
-           VALUES (@tenant_id, @project_id, @user_id, @barcode_value, @barcode_format, @scanned_at, @notes, @metadata::jsonb, @kind)
-           RETURNING *''',
+        '''DELETE FROM scans
+           WHERE tenant_id = @tenant_id
+             AND project_id = @project_id
+             AND kind = @kind''',
       ),
       parameters: {
         'tenant_id': tenantId,
         'project_id': projectId,
-        'user_id': userId,
-        'barcode_value': barcodeValue,
-        'barcode_format': barcodeFormat,
-        'scanned_at': scannedAt,
-        'notes': notes,
-        // jsonb expects valid JSON; Map.toString() is not JSON.
-        'metadata': jsonEncode(metadata),
-        'kind': _normalizeKind(kind),
+        'kind': normalized,
       },
     );
-    return _rowToMap(result.first);
+    return result.affectedRows;
+  }
+
+  /// Deletes a specific subset of scans of a given kind by their barcode
+  /// values. Used by "Remove orphans" in the receiving summary view.
+  Future<int> deleteByValuesAndKind({
+    required String tenantId,
+    required String projectId,
+    required String kind,
+    required List<String> barcodeValues,
+  }) async {
+    if (barcodeValues.isEmpty) return 0;
+    final normalized = _normalizeKind(kind);
+    final placeholders = <String>[];
+    final params = <String, dynamic>{
+      'tenant_id': tenantId,
+      'project_id': projectId,
+      'kind': normalized,
+    };
+    for (var i = 0; i < barcodeValues.length; i++) {
+      final key = 'v$i';
+      placeholders.add('UPPER(@$key)');
+      params[key] = barcodeValues[i];
+    }
+    final result = await db.execute(
+      Sql.named(
+        '''DELETE FROM scans
+           WHERE tenant_id = @tenant_id
+             AND project_id = @project_id
+             AND kind = @kind
+             AND UPPER(barcode_value) IN (${placeholders.join(', ')})''',
+      ),
+      parameters: params,
+    );
+    return result.affectedRows;
   }
 
   Future<List<Map<String, dynamic>>> createBatch({

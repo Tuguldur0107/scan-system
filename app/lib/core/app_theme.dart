@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 
 class AppTheme {
@@ -37,11 +38,23 @@ class AppTheme {
   static ThemeData get dark => _theme(_lightScheme);
 
   static ThemeData _theme(ColorScheme scheme) {
+    // `SF Pro Display` is a system font on Apple platforms. Android devices
+    // (Chainway C5, etc.) do not ship it, so wiring it into every `TextStyle`
+    // would force Flutter to substitute — in the worst case that can surface
+    // as missing-glyph boxes next to icons. We keep SF Pro only where it
+    // actually exists and fall back to the platform default elsewhere.
+    final uiFont = switch (defaultTargetPlatform) {
+      TargetPlatform.iOS || TargetPlatform.macOS => 'SF Pro Display',
+      _ => null,
+    };
+
     final base = ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: scheme.surface,
-      fontFamily: 'SF Pro Display',
+      // Never set a global `fontFamily` on `ThemeData` unless the font files
+      // are bundled in `pubspec.yaml`. A missing family can break icon/text
+      // rendering on Android industrial devices.
     );
 
     return base.copyWith(
@@ -52,6 +65,7 @@ class AppTheme {
           fontWeight: FontWeight.w800,
           letterSpacing: -1.6,
           color: scheme.onSurface,
+          fontFamily: uiFont,
         ),
         displayMedium: TextStyle(
           fontSize: 34,
@@ -59,6 +73,7 @@ class AppTheme {
           fontWeight: FontWeight.w800,
           letterSpacing: -1.2,
           color: scheme.onSurface,
+          fontFamily: uiFont,
         ),
         headlineMedium: TextStyle(
           fontSize: 28,
@@ -66,40 +81,47 @@ class AppTheme {
           fontWeight: FontWeight.w700,
           letterSpacing: -0.8,
           color: scheme.onSurface,
+          fontFamily: uiFont,
         ),
         titleLarge: TextStyle(
           fontSize: 20,
           height: 1.2,
           fontWeight: FontWeight.w700,
           color: scheme.onSurface,
+          fontFamily: uiFont,
         ),
         titleMedium: TextStyle(
           fontSize: 16,
           height: 1.3,
           fontWeight: FontWeight.w700,
           color: scheme.onSurface,
+          fontFamily: uiFont,
         ),
         bodyLarge: TextStyle(
           fontSize: 15,
           height: 1.45,
           fontWeight: FontWeight.w500,
           color: scheme.onSurface,
+          fontFamily: uiFont,
         ),
         bodyMedium: TextStyle(
           fontSize: 14,
           height: 1.4,
           color: scheme.onSurface,
+          fontFamily: uiFont,
         ),
         bodySmall: TextStyle(
           fontSize: 12,
           height: 1.35,
           color: scheme.onSurfaceVariant,
+          fontFamily: uiFont,
         ),
         labelLarge: TextStyle(
           fontSize: 14,
           fontWeight: FontWeight.w700,
           letterSpacing: 0.1,
           color: scheme.onSurface,
+          fontFamily: uiFont,
         ),
       ),
       appBarTheme: AppBarTheme(
